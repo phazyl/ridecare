@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Greater Malé Road Capacity Simulator</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#151b23; --panel2:#1c242e; --line:#2a3441; --txt:#e6edf3; --mut:#8b98a8;
+    --acc:#3fb6ff; --ok:#3fb950; --warn:#e3a008; --bad:#f85149;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  #app{display:grid;grid-template-columns:1fr 380px;height:100vh}
+  #stage{position:relative;min-width:0;min-height:0;overflow:hidden}
+  #cv{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:grab}
+  #cv:active{cursor:grabbing}
+  #banner{position:absolute;left:12px;top:12px;max-width:min(560px,80%);padding:8px 12px;border-radius:8px;
+    background:#3a2a05cc;border:1px solid #7a5a10;color:#ffd66b;font-size:12.5px;display:none}
+  #banner code{background:#0006;padding:1px 5px;border-radius:4px}
+  #zoom{position:absolute;right:12px;top:12px;display:flex;flex-direction:column;gap:6px}
+  #zoom button{width:34px;height:34px;font-size:18px;line-height:1}
+  #legend{position:absolute;left:12px;bottom:34px;background:#0d1117cc;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--mut)}
+  #legend .grad{width:170px;height:8px;border-radius:4px;margin:4px 0 2px;
+    background:linear-gradient(90deg,#232c38,#2b4a45,#3f6b3a,#7b7a25,#a8691f,#c2411f,#d71f2e)}
+  #legend .lr{display:flex;justify-content:space-between}
+  #attr{position:absolute;left:12px;bottom:8px;font-size:11px;color:var(--mut)}
+  #panel{background:var(--panel);border-left:1px solid var(--line);overflow:auto;padding:14px 16px 24px}
+  h1{font-size:16px;margin:0 0 2px}
+  .sub{color:var(--mut);font-size:12px;margin-bottom:12px}
+  h3{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:18px 0 8px;border-top:1px solid var(--line);padding-top:12px}
+  button{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:5px 9px;cursor:pointer;font:inherit}
+  button:hover{border-color:var(--acc)}
+  input[type=number],select{background:var(--bg);color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
+  input[type=range]{width:100%;accent-color:var(--acc)}
+  .btns{display:flex;flex-wrap:wrap;gap:6px}
+  .line{display:flex;align-items:center;gap:8px;margin:6px 0}
+  .line label{flex:1;color:var(--mut)}
+  .line output{min-width:52px;text-align:right}
+  .trow{display:grid;grid-template-columns:12px 1fr 92px;gap:2px 8px;align-items:center;margin:7px 0}
+  .trow .dot{width:10px;height:10px;border-radius:50%}
+  .trow .crange{grid-column:1 / -1}
+  .trow input[type=number]{width:92px;text-align:right}
+  .stat{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dashed #243040}
+  .stat span:first-child{color:var(--mut)}
+  .stat b{font-variant-numeric:tabular-nums}
+  #barWrap{position:relative;height:16px;background:var(--bg);border:1px solid var(--line);border-radius:8px;margin:8px 0 4px;overflow:visible}
+  #barFill{height:100%;width:0;border-radius:8px;background:var(--ok);transition:background .2s}
+  #barMark{position:absolute;top:-4px;bottom:-4px;width:2px;background:#fff;opacity:.85}
+  #barLbl{font-size:11px;color:var(--mut);display:flex;justify-content:space-between}
+  .note{font-size:12px;color:var(--mut);margin:8px 0}
+  table.dims{width:100%;border-collapse:collapse;font-size:12px}
+  table.dims td,table.dims th{padding:2px 4px;text-align:right}
+  table.dims td:first-child,table.dims th:first-child{text-align:left}
+  table.dims input{width:56px;text-align:right}
+  details summary{cursor:pointer;color:var(--mut)}
+  .chk{display:flex;gap:6px;align-items:center;margin:6px 0;color:var(--mut)}
+  @media (max-width:860px){
+    #app{grid-template-columns:1fr;grid-template-rows:56vh 1fr;height:100vh}
+    #panel{border-left:0;border-top:1px solid var(--line)}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="banner"></div>
+    <div id="zoom"><button id="zin" title="Zoom in">+</button><button id="zout" title="Zoom out">−</button><button id="zfit" title="Fit to screen" style="font-size:13px">⤢</button></div>
+    <div id="legend">Road colour = local coverage vs. packing limit
+      <div class="grad"></div><div class="lr"><span>free</span><span>jammed</span></div></div>
+    <div id="attr">Road geometry © OpenStreetMap contributors · demo model, not a calibrated traffic forecast</div>
+  </div>
+
+  <aside id="panel">
+    <h1>Greater Malé road capacity simulator</h1>
+    <div class="sub">Vehicle counts from the IUM vehicle-restriction report (Table 3). Drag to pan, scroll to zoom — zoom in past ~3 px/m to see true-scale vehicles.</div>
+
+    <h3 style="margin-top:6px;border-top:0;padding-top:0">Surface area covered</h3>
+    <div id="barWrap"><div id="barFill"></div><div id="barMark" title="Packing limit"></div></div>
+    <div id="barLbl"><span>0 %</span><span id="barMarkLbl">packing limit</span><span>100 %</span></div>
+    <div class="stat"><span>Road area</span><b id="sArea">–</b></div>
+    <div class="stat"><span>Vehicle footprint (all)</span><b id="sFoot">–</b></div>
+    <div class="stat"><span>Coverage of road area</span><b id="sPct">–</b></div>
+    <div class="stat"><span>…of which parked</span><b id="sParkFoot">–</b></div>
+    <div class="stat"><span>Vehicles (moving / parked)</span><b id="sVeh">–</b></div>
+    <div class="stat"><span>Mean speed</span><b id="sSpeed">–</b></div>
+    <div class="stat"><span>Road area at ≥80 % of jam</span><b id="sCong">–</b></div>
+    <div class="stat"><span>Geometric ceiling at this mix</span><b id="sCeil">–</b></div>
+    <div class="note">Geometric ceiling = packing limit × road area ÷ mean vehicle footprint. It is a space limit, not a traffic-flow capacity. Vehicles are placed without collision avoidance, so coverage above the limit means overlap.</div>
+
+    <h3>Road area</h3>
+    <div class="line"><label for="areaRange">Street surface area</label><output id="areaOut"></output></div>
+    <input type="range" id="areaRange">
+    <div class="btns" style="margin-top:6px">
+      <button id="areaOsmnx">0.894 km² · OSMnx</button><button id="areaReport">0.902 km² · report</button>
+    </div>
+
+    <h3>Fleet by vehicle type</h3>
+    <div class="btns" id="presets"></div>
+    <div class="line" style="margin-top:10px"><label for="scaleRange">Scale whole fleet (today's mix)</label><output id="scaleOut">100 %</output></div>
+    <input type="range" id="scaleRange" min="0" max="200" step="1" value="100">
+    <div id="types"></div>
+
+    <h3>Parking &amp; movement</h3>
+    <div class="line"><label for="parkRange">Share of vehicles parked</label><output id="parkOut">0 %</output></div>
+    <input type="range" id="parkRange" min="0" max="100" step="1" value="0">
+    <div class="line"><label for="stripNum">Kerbside parking strip (m per side)</label><input type="number" id="stripNum" min="0.5" max="4" step="0.1" value="2.3" style="width:70px"></div>
+    <div class="line"><label for="jamRange">Packing limit (coverage at jam)</label><output id="jamOut">50 %</output></div>
+    <input type="range" id="jamRange" min="20" max="90" step="1" value="50">
+    <div class="line"><label for="speedSel">Simulation speed</label>
+      <select id="speedSel"><option>1</option><option>5</option><option selected>10</option><option>25</option><option>50</option></select><span>×</span>
+      <button id="pauseBtn">Pause</button></div>
+    <div class="line"><label for="dotRange">Min. dot size on screen</label><output id="dotOut">2.0 px</output></div>
+    <input type="range" id="dotRange" min="1" max="6" step="0.5" value="2">
+    <label class="chk"><input type="checkbox" id="heatChk" checked> Colour streets by local coverage</label>
+    <label class="chk"><input type="checkbox" id="slowChk"> Vehicles slow down in crowded streets (they then bunch up)</label>
+
+    <h3>Vehicle dimensions</h3>
+    <details>
+      <summary>Edit footprints &amp; free-flow speeds</summary>
+      <table class="dims" id="dims"></table>
+      <div class="note">Defaults: motorcycle 2.0×0.8 m (UK/Singapore bay), car 4.4×1.8 m; HDC parking bays are 2.3×5 m (car) and 2×1 m (motorcycle).</div>
+    </details>
+
+    <div class="note" style="margin-top:16px">
+      Model: vehicles are placed area-weighted on the street network (wide, long streets get proportionally more), drive on the left, and — if the slowdown option is on — slow linearly as local coverage approaches the packing limit. With it off, vehicles keep an even, area-proportional spread.
+    </div>
+  </aside>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
