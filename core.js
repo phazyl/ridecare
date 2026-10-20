@@ -223,6 +223,7 @@ GM.createRunner = function createRunner(post) {
   // Incremental change of the fleet: remove surplus, then try to place what is missing (including
   // vehicles that did not fit earlier, in case there is room now).
   function applyCounts(arr) {
+    retryGap = 1000; retryAt = 0;
     let tot = 0;
     for (let t = 0; t < nT; t++) { want[t] = Math.max(0, Math.min(Math.floor(arr[t]) || 0, cap - tot)); tot += want[t]; }
     updateRmax();
@@ -237,6 +238,7 @@ GM.createRunner = function createRunner(post) {
 
   // Full re-placement (street widths or vehicle dimensions changed, so old poses may now overlap).
   function replaceAll() {
+    retryGap = 1000; retryAt = 0;
     nv = 0; placed.fill(0); G.head.fill(-1);
     updateRmax();
     for (const t of bigFirst) placed[t] = placeMany(t, want[t]);
@@ -392,10 +394,12 @@ GM.createRunner = function createRunner(post) {
       if (vparked[i]) continue;
       const t = vtype[i], free = TV[t] * vjit[i];
       mv++; sumF += free;
-      const moved = advance(i, free * spd[ve[i]] * h);
+      const e0 = ve[i];
+      net.ep[e0] += h;
+      const moved = advance(i, free * spd[e0] * h);
       if (moved > 0) { sumV += moved / h; vwait[i] = 0; }
       else {
-        blocked++;
+        blocked++; net.eb[e0] += h;
         const w = vwait[i] += h, pat = P.patience;
         if (pat > 0 && w > pat) {
           const e = ve[i], zb = stopDist(e), atLine = Math.abs(vs[i] - (vdir[i] === 1 ? net.len[e] - zb : zb)) < 0.6;
@@ -485,13 +489,117 @@ GM.createRunner = function createRunner(post) {
     const moving = nv - parkedN;
     const stats = {
       mv: S.paused || !last.mv ? moving : Math.round(last.mv), parkedN, parkedFP,
-      blockedN: Math.min(last.blocked, moving), sumV: last.sumV, sumF: last.sumF, congArea, placedN: nv, relocN,
+      blockedN: Math.min(last.blocked, moving), sumV: last.sumV, sumF: last.sumF, congArea, placedN: nv, relocN, simT,
     };
     const m = markers; markers = [];
     outstanding++;
     post({ type: 'frame', buf, n: nv, gs, bkt: net.bkt.slice(), stats, run: { events: run.events, days: run.days },
-      simRate, placed: Array.from(placed), markers: m }, [buf]);
+      simRate, placed: Array.from(placed), markers: m, hot: hotV !== hotPosted ? hot : undefined }, [buf]);
+    hotPosted = hotV;
   }
+
+
+  /* ---------------- retry of vehicles that did not fit (cheap, throttled) ------------- */
+  // Placement is random-sequential, so a vehicle that found no room at start-up may find a gap later as
+  // traffic moves. Each round makes a small fixed number of attempts within a time cap; a round that
+  // finds nothing doubles the wait (1 s -> 8 s), any layout/count change resets it.
+  let retryAt = 0, retryGap = 1000;
+  const deficit = () => { let d = 0; for (let t = 0; t < nT; t++) d += Math.max(0, want[t] - placed[t]); return d; };
+  function retryUnplaced(maxMs) {
+    const tEnd = nowMs() + maxMs; let got = 0, tries = 0;
+    for (const t of bigFirst) {
+      while (placed[t] < want[t] && tries < 240 && nowMs() < tEnd) {
+        tries++;
+        if (tryPlace(t)) { placed[t]++; got++; } 
+      }
+    }
+    if (got) covStale = true;
+    return got;
+  }
+
+  /* ---------------------- hotspot ranking (live, every ~2 s) ---------------------- */
+  // Score = average number of vehicles waiting on a street over the window (vehicle-seconds waiting / window).
+  // Neighbouring streets are merged so a queue that spills over several streets counts once.
+  let hot = [], hotV = 0, hotPosted = -1, hotAt = 0, hotSim = 0, hotEff = 0, simT = 0;
+  const GOODS = TYPES.map((t) => (t.L * t.W >= 9 && t.id !== 'bus') ? 1 : 0);   // vans, pickups, trucks, lorries, other heavy
+  const HOT_N = 8, HOT_MERGE = 70, HOT_MIN_Q = 1.5;
+  function computeHotspots() {
+    const E = net.E, eb = net.eb, ep = net.ep;
+    if (hotSim <= 0.5) return;
+    const win = hotEff * 0.4 + hotSim;       // eb/ep carry 40% of the previous window, so the effective window does too
+    hotEff = win; hotSim = 0;
+    const idx = [];
+    const sc = (e) => eb[e] * (ep[e] > 0 ? eb[e] / ep[e] : 0);          // waiting vehicles x share of time spent waiting: long, mostly free-flowing streets rank low
+    for (let e = 0; e < E; e++) if (eb[e] / win >= HOT_MIN_Q && eb[e] >= 0.3 * ep[e]) idx.push(e);
+    idx.sort((a, b) => sc(b) - sc(a));
+    const pick = [], mid = [];
+    for (const e of idx) {
+      if (pick.length >= HOT_N) break;
+      poseAt(e, net.len[e] / 2, 1, 0);
+      let ok = true;
+      for (const m of mid) if (Math.hypot(m[0] - PX, m[1] - PY) < HOT_MERGE) { ok = false; break; }
+      if (ok) { pick.push(e); mid.push([PX, PY]); }
+    }
+    const slot = new Int16Array(E).fill(-1); pick.forEach((e, k) => { slot[e] = k; });
+    const comp = new Int32Array(pick.length * nT), parkedC = new Int32Array(pick.length), cnt = new Int32Array(pick.length);
+    for (let i = 0; i < nv; i++) {
+      const k = slot[ve[i]]; if (k < 0) continue;
+      cnt[k]++; if (vparked[i]) parkedC[k]++; else comp[k * nT + vtype[i]]++;
+    }
+    const jam = Math.max(0.01, P.jam);
+    hot = pick.map((e, k) => {
+      const mixv = []; for (let t = 0; t < nT; t++) if (comp[k * nT + t] > 0) mixv.push([t, comp[k * nT + t]]);
+      mixv.sort((a, b) => b[1] - a[1]);
+      const Ae = net.len[e] * net.ewS[e];
+      let goods = 0; for (let t = 0; t < nT; t++) if (GOODS[t]) goods += comp[k * nT + t];
+      return { e, nm: net.nm[e], goods, mv: cnt[k] - parkedC[k], x: mid[k][0], y: mid[k][1], q: eb[e] / win, share: ep[e] > 0 ? eb[e] / ep[e] : 0, n: cnt[k], parked: parkedC[k],
+               cov: Ae > 0 ? net.occ[e] / Ae / jam : 0, len: net.len[e], w: net.ewS[e], ow: net.ow[e], mix: mixv.slice(0, 4) };
+    });
+    for (let e = 0; e < E; e++) { eb[e] *= 0.4; ep[e] *= 0.4; }         // exponential memory: recent minutes dominate
+    hotV++;
+  }
+
+  /* ------------- headless what-if run (own worker; no frames, no real-time loop) ------------- */
+  let cancelled = false;
+  function runScenario(m) {
+    cancelled = false; cancelAt = 0;
+    Object.assign(P, m.p.P); Object.assign(C, { on: false }); S.paused = false; S.hidden = false;
+    P.jam = Math.max(0.01, P.jam);
+    setupNet(m);
+    nv = 0; placed.fill(0); relocN = 0; simT = 0; pgen = 0;
+    applyCounts(m.counts);
+    const warm = m.warm, total = m.warm + m.meas, id = m.id;
+    let measuring = false, rel0 = 0, t0m = 0, nextCov = 0, nextRetry = 2, lastProg = 0;
+    function slice() {
+      if (cancelled) { post({ type: 'scenarioCancelled', id }); return; }
+      const tStart = nowMs();
+      try {
+        while (simT < total && nowMs() - tStart < 40) {
+          if (simT >= nextCov) { refreshCoverage(); nextCov = simT + 2; }
+          if (simT >= nextRetry) { retryUnplaced(4); nextRetry = simT + 3; }
+          if (!measuring && simT >= warm) { measuring = true; acc.steps = acc.mv = acc.blocked = acc.sumV = acc.sumF = 0; rel0 = relocN; t0m = simT; }
+          substep(PHYS.maxStep); simT += PHYS.maxStep;
+        }
+      } catch (err) { post({ type: 'error', message: String(err && err.stack || err) }); return; }
+      if (simT < total) {
+        if (nowMs() - lastProg > 250) { lastProg = nowMs(); post({ type: 'scenarioProgress', id, frac: simT / total }); }
+        setTimeout(slice, 0); return;
+      }
+      refreshCoverage();
+      let wantT = 0, placedT = 0; for (let t = 0; t < nT; t++) { wantT += want[t]; placedT += placed[t]; }
+      const st = Math.max(1, acc.steps), mvAvg = acc.mv / st;
+      post({ type: 'scenarioResult', id, res: {
+        placed: placedT, want: wantT, unfit: wantT - placedT,
+        waitPct: mvAvg > 0 ? 100 * (acc.blocked / st) / mvAvg : 0,
+        speedPct: acc.sumF > 0 ? 100 * acc.sumV / acc.sumF : 0,
+        vkmh: (acc.sumV / st) * 3.6 / 1000,
+        relocPer1000PerMin: nv > 0 ? (relocN - rel0) / Math.max(1, simT - t0m) * 60 / (nv / 1000) : 0,
+        congKm2: congArea / 1e6,
+      } });
+    }
+    slice();
+  }
+  let cancelAt = 0;
 
   /* ------------------------------------ loop -------------------------------- */
   let timer = null, started = false, lastT = 0, simAcc = 0, lastPost = 0, dirty = true;
@@ -515,8 +623,10 @@ GM.createRunner = function createRunner(post) {
         substep(h); simAcc -= h; simDone += h;
       } while (simAcc > 1e-4 && nowMs() - t0 < BUDGET_MS);
       simAcc = 0;                       // anything not simulated is dropped; simRate reports the shortfall
-      winSim += simDone; winReal += dtReal;
+      winSim += simDone; winReal += dtReal; hotSim += simDone; simT += simDone;
       dirty = true;
+      if (t0 >= retryAt && deficit() > 0) { retryAt = t0 + retryGap; if (retryUnplaced(3)) { retryGap = 1000; dirty = true; } else retryGap = Math.min(8000, retryGap * 2); }
+      if (t0 - hotAt > 2000) { hotAt = t0; computeHotspots(); }
     } else simAcc = 0;
 
     if (C.on && !S.paused && !S.hidden) collisionStep(dtReal);
@@ -545,14 +655,19 @@ GM.createRunner = function createRunner(post) {
     covStale = true; dirty = true;
   }
 
-  function init(m) {
-    applyParams(m.p);
+  function setupNet(m) {
     net = GM.prepareNetwork(m.raw);
     GM.applyRoadArea(net, P.areaKm2);
     net.occ = new Float32Array(net.E); net.spdF = new Float32Array(net.E).fill(1);
+    net.eb = new Float32Array(net.E); net.ep = new Float32Array(net.E);      // per-street waiting / presence (vehicle-seconds) for hotspot ranking
     setDims(m.dims);
     allocate(); buildGrid(net.bounds);
-    nv = 0; placed.fill(0); relocN = 0;
+  }
+
+  function init(m) {
+    applyParams(m.p);
+    setupNet(m);
+    nv = 0; placed.fill(0); relocN = 0; simT = 0;
     applyCounts(m.counts);
     if (!started) { started = true; lastT = 0; timer = setTimeout(loop, 0); }
   }
@@ -564,6 +679,8 @@ GM.createRunner = function createRunner(post) {
         case 'params': applyParams(m.p); break;
         case 'counts': pendCounts = m.counts; break;                // latest wins; applied at the next loop iteration
         case 'dims': setDims(m.dims); updateRmax(); layoutAt = nowMs(); dirty = true; break;
+        case 'scenario': runScenario(m); break;
+        case 'cancel': cancelled = true; break;
         case 'resetRun': relocN = 0; run.events = 0; run.days = 0; markers = []; dirty = true; break;
         case 'recycle': outstanding = Math.max(0, outstanding - 1); if (m.buf && pool.length < 4) pool.push(m.buf); break;
       }

@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>Greater Malé Road Capacity Simulator</title>
 <style>
   :root{
@@ -38,8 +39,10 @@
   .line{display:flex;align-items:center;gap:8px;margin:6px 0}
   .line label{flex:1;color:var(--mut)}
   .line output{min-width:52px;text-align:right}
-  .trow{display:grid;grid-template-columns:12px 1fr 92px;gap:2px 8px;align-items:center;margin:7px 0}
-  .trow .dot{width:10px;height:10px;border-radius:50%}
+  .trow{display:grid;grid-template-columns:34px 1fr 92px;gap:2px 8px;align-items:center;margin:7px 0}
+  .trow .swc{display:flex;align-items:center;justify-content:center;height:14px}
+  .trow .sw{display:block;border-radius:1px;box-shadow:0 0 0 1px #0006}
+  .trow .nm small{display:block;color:var(--mut);font-size:11px;line-height:1.2}
   .trow .crange{grid-column:1 / -1}
   .trow input[type=number]{width:92px;text-align:right}
   .stat{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dashed #243040}
@@ -56,7 +59,32 @@
   table.dims input{width:56px;text-align:right}
   details summary{cursor:pointer;color:var(--mut)}
   .chk{display:flex;gap:6px;align-items:center;margin:6px 0;color:var(--mut)}
+  #noRoom{position:absolute;right:58px;top:12px;max-width:min(330px,calc(100% - 84px));font-size:12px;z-index:3}
+  #noRoom[hidden]{display:none}
+  #noRoomBtn{display:flex;gap:6px;align-items:center;background:#3a1d12ee;border:1px solid #c2561f;color:#ffd9c2;border-radius:16px;padding:5px 11px;font-weight:600;margin-left:auto}
+  #noRoomBody{display:none;margin-top:6px;background:#0d1117f2;border:1px solid var(--line);border-radius:8px;padding:9px 11px;color:var(--txt);line-height:1.45}
+  #noRoom.open #noRoomBody{display:block}
+  #noRoomBody .mut{color:var(--mut)}
+  .advlevel{display:flex;align-items:center;gap:10px;margin:2px 0 6px}
+  .advlevel .chip{font-weight:700;padding:3px 10px;border-radius:12px;color:#0d1117}
+  .hot{border:1px solid var(--line);border-left-width:4px;border-radius:8px;background:var(--panel2);padding:7px 9px;margin:7px 0;cursor:pointer}
+  .hot:hover{border-color:var(--acc)}
+  .hot .h1{display:flex;justify-content:space-between;gap:8px;font-weight:600}
+  .hot .h2{color:var(--mut);font-size:12px;margin:2px 0 4px}
+  .hot .tags{display:flex;flex-wrap:wrap;gap:4px;margin:3px 0}
+  .hot .tag{font-size:11px;border:1px solid var(--line);border-radius:10px;padding:1px 7px;color:var(--mut)}
+  .hot ul{margin:4px 0 0 16px;padding:0;font-size:12px}
+  .hot li{margin:2px 0}
+  #advProg{height:8px;background:var(--bg);border:1px solid var(--line);border-radius:5px;margin:8px 0 4px;overflow:hidden}
+  #advProgFill{height:100%;width:0;background:var(--acc);transition:width .25s}
+  table.res{width:100%;border-collapse:collapse;font-size:12px;margin:6px 0}
+  table.res th,table.res td{padding:3px 4px;text-align:right;border-bottom:1px dashed #243040}
+  table.res th:first-child,table.res td:first-child{text-align:left}
+  table.res td.good{color:#3fb950;font-weight:600}
+  table.res td.flat{color:var(--mut)}
+  .reco{border:1px solid var(--line);border-radius:8px;background:var(--panel2);padding:8px 10px;margin:8px 0;line-height:1.5}
   @media (max-width:860px){
+    #noRoom{left:12px;right:auto;top:34px;max-width:calc(100% - 76px)}
     #app{grid-template-columns:1fr;grid-template-rows:56vh 1fr;grid-template-rows:56dvh 1fr}
     #panel{border-left:0;border-top:1px solid var(--line)}
   }
@@ -67,6 +95,7 @@
   <div id="stage">
     <canvas id="cv"></canvas>
     <div id="banner"></div>
+    <div id="noRoom" hidden><button id="noRoomBtn" aria-expanded="false"><span id="noRoomTxt"></span></button><div id="noRoomBody"></div></div>
     <div id="zoom"><button id="zin" title="Zoom in">+</button><button id="zout" title="Zoom out">−</button><button id="zfit" title="Fit to screen" style="font-size:13px">⤢</button></div>
     <div id="legend">Road colour = local coverage vs. packing limit
       <div class="grad"></div><div class="lr"><span>free</span><span>jammed</span></div></div>
@@ -94,9 +123,21 @@
     <div class="stat"><span>Geometric ceiling at this mix</span><b id="sCeil">–</b></div>
     <div class="note">Geometric ceiling = packing limit × road area ÷ mean vehicle footprint. It is a space limit, not a traffic-flow capacity. Every vehicle is placed with an overlap check and only moves into free space, so vehicles never overlap; whatever does not fit is reported under “Placement”. The simulation runs in a background worker. If the device cannot keep up, the “Simulation rate” falls below the selected speed instead of the page freezing. This is a simplified model, not a calibrated traffic forecast.</div>
 
+    <h3>Traffic advisor</h3>
+    <div class="advlevel"><span class="chip" id="advChip">–</span><span id="advHead" class="note" style="margin:0"></span></div>
+    <label class="chk"><input type="checkbox" id="hotChk" checked> Mark hotspots on the map</label>
+    <div id="hotList"><div class="note">Collecting data… hotspots appear after a few seconds of running.</div></div>
+    <div class="note">Hotspots are the street segments where the most vehicles are waiting right now (averaged over the last few seconds). Neighbouring segments are merged. Streets show their OpenStreetMap name when the network file has names (re-run tools/export_network.py); otherwise they are described by size. Click one to find it on the map. Causes and measures are rule-based reading of the model, not simulated per street.</div>
+    <div style="margin:12px 0 4px;font-weight:600">Test traffic measures</div>
+    <div class="note" style="margin-top:0">Reruns the simulation without the live view for each measure below, from the fleet and settings you have now, and compares them. Takes a few minutes; the live view pauses meanwhile.</div>
+    <div class="btns"><button id="advRun">Test measures</button><button id="advCancel" hidden>Cancel</button></div>
+    <div id="advProg" hidden><div id="advProgFill"></div></div>
+    <div class="note" id="advProgTxt"></div>
+    <div id="advRes"></div>
+
     <h3>Historical &amp; projected fleet</h3>
     <div class="line"><label for="yearRange">Select Year</label><output id="yearOut">2024</output></div>
-    <input type="range" id="yearRange" min="2014" max="2030" step="1" value="2024">
+    <input type="range" id="yearRange" min="2021" max="2026" step="1" value="2024">
     <div class="note" id="yearStatus">Loading…</div>
     <div class="stat"><span>Total fleet size</span><b id="yearFleet">–</b></div>
 
@@ -109,10 +150,12 @@
 
     <h3>Fleet by vehicle type</h3>
     <div class="note" style="margin-top:0">Presets and the slider scale the whole fleet at today’s mix. Edit single types below.</div>
+    <div class="note" id="shapeNote"><b>Legend.</b> Each swatch shows the type’s colour and its true proportions (length × width). Zoomed out, every vehicle is drawn as a dot in that colour, enlarged so it stays visible. Zoom in past about 3 px per metre and vehicles become true-size rectangles pointing the way they drive. Parked vehicles are drawn paler.</div>
     <div class="btns" id="presets"></div>
     <div class="line" style="margin-top:10px"><label for="scaleRange">Scale whole fleet (today's mix)</label><output id="scaleOut">100 %</output></div>
     <input type="range" id="scaleRange" min="0" max="200" step="1" value="100">
     <div id="types"></div>
+    <details id="otherWrap" style="margin-top:8px"><summary id="otherSum">Other vehicle types</summary><div id="typesOther"></div></details>
 
     <h3>Parking &amp; movement</h3>
     <div class="line"><label for="parkRange">Share of vehicles parked</label><output id="parkOut">0 %</output></div>

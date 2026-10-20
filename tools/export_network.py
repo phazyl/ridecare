@@ -19,7 +19,9 @@ What it does
 5. Calibrates ALL widths with one common factor so the union of the buffered
    streets equals --target-area (default 0.894 km2, your earlier OSMnx figure).
    The web app lets you slide the area between 0.80 and 1.00 km2 afterwards.
-6. Writes a compact JSON (coordinates in metres, relative to the south-west
+6. Reads the OSM street name of every street (name:en, then name, then ref) so the
+   dashboard can say "Majeedhee Magu" instead of "617 m street".
+7. Writes a compact JSON (coordinates in metres, relative to the south-west
    corner) that the browser loads.
 
 One-way encoding in network.json
@@ -32,6 +34,12 @@ node v. One-way streets get one extra key:
 Edges without "ow" are two-way. Loaders that do not know "ow" ignore it, so an
 older simulation still treats every street as two-way.
 
+Street names
+------------
+meta.names is a list of the distinct street names; an edge carries "n": <index into
+meta.names> when OSM has a name for it (unnamed streets have no "n"). Loaders that do not
+know "n" ignore it.
+
 Usage
 -----
     pip install osmnx geopandas shapely
@@ -41,6 +49,7 @@ Usage
     python tools/export_network.py --network-type all  # include minor ways
     python tools/export_network.py --keep-dead-ends    # do not prune to the strongly connected network
     python tools/export_network.py --ignore-oneway     # old behaviour: every street two-way
+    python tools/export_network.py --prefer-local-name # local-language name before name:en
 
 Output: data/network.json
 """
@@ -104,6 +113,24 @@ def width_for(row):
     return DEFAULT_WIDTH_M.get(hw, DEFAULT_WIDTH_M["default"]), "default"
 
 
+def clean_text(v):
+    v = first(v)
+    if v is None:
+        return None
+    s = str(v).strip()
+    return None if not s or s.lower() == "nan" else s
+
+
+def street_name(row, prefer_local=False):
+    """OSM name of an edge: name:en, then name, then ref (or name first with --prefer-local-name)."""
+    order = ("name", "name:en", "ref") if prefer_local else ("name:en", "name", "ref")
+    for col in order:
+        nm = clean_text(row.get(col))
+        if nm:
+            return nm
+    return None
+
+
 def union_area(lines, widths, scale):
     polys = [ln.buffer(w * scale / 2.0) for ln, w in zip(lines, widths)]
     return unary_union(polys).area
@@ -127,11 +154,12 @@ def keep_strongly_connected(G):
     return H
 
 
-def collapse_streets(gdf_edges, ignore_oneway=False):
+def collapse_streets(gdf_edges, ignore_oneway=False, prefer_local=False):
     """Turn OSMnx's directed edges into one record per physical street.
 
-    Returns (rows, oneway). rows[i] is an edge row and oneway[i] says whether it is a one-way
-    street. For a one-way street rows[i]["u"] -> rows[i]["v"] is the direction of travel (OSMnx
+    Returns (rows, oneway, names). rows[i] is an edge row, oneway[i] says whether it is a one-way
+    street and names[i] is its OSM name (or None; the partner edge of a two-way street is used when
+    the kept edge has no name). For a one-way street rows[i]["u"] -> rows[i]["v"] is the direction of travel (OSMnx
     already orients each directed edge and its geometry that way, also for oneway=-1). For a
     two-way street the direction of the kept row does not matter.
 
@@ -146,11 +174,12 @@ def collapse_streets(gdf_edges, ignore_oneway=False):
         key = (min(r["u"], r["v"]), max(r["u"], r["v"]), round(float(r["length"]), 1))
         groups.setdefault(key, []).append(r)
 
-    rows, oneway = [], []
+    rows, oneway, names = [], [], []
     for grp in groups.values():
         if ignore_oneway:
             rows.append(grp[0])
             oneway.append(False)
+            names.append(next((n for n in (street_name(g, prefer_local) for g in grp) if n), None))
             continue
         mids = [r["geometry"].interpolate(0.5, normalized=True) for r in grp]
         used = [False] * len(grp)
@@ -169,7 +198,11 @@ def collapse_streets(gdf_edges, ignore_oneway=False):
                 used[mate] = True
             rows.append(r)
             oneway.append(mate is None)
-    return rows, oneway
+            nm = street_name(r, prefer_local)
+            if nm is None and mate is not None:
+                nm = street_name(grp[mate], prefer_local)
+            names.append(nm)
+    return rows, oneway, names
 
 
 def main():
@@ -187,9 +220,15 @@ def main():
     ap.add_argument("--keep-dead-ends", action="store_true",
                     help="do not prune to the largest strongly connected network "
                          "(streets that one-way rules make impossible to leave/enter stay in)")
+    ap.add_argument("--prefer-local-name", action="store_true",
+                    help="use the OSM 'name' tag before 'name:en' for street names")
     ap.add_argument("--out", default="data/network.json")
     args = ap.parse_args()
 
+    try:  # osmnx drops most tags by default; keep the English name and the road reference
+        ox.settings.useful_tags_way = list(ox.settings.useful_tags_way) + ["name:en", "ref"]
+    except Exception:
+        pass
     west, south, east, north = args.bbox
     print(f"Downloading OSM '{args.network_type}' network for bbox {args.bbox} ...")
     G = ox.graph_from_polygon(box(west, south, east, north),
@@ -201,7 +240,8 @@ def main():
     gdf_edges = gdf_edges.reset_index()  # columns u, v, key
 
     # --- one record per street; a street with a single directed edge is one-way ----
-    rows, oneway = collapse_streets(gdf_edges, ignore_oneway=args.ignore_oneway)
+    rows, oneway, street_names = collapse_streets(gdf_edges, ignore_oneway=args.ignore_oneway,
+                                                  prefer_local=args.prefer_local_name)
     n_ow = sum(oneway)
     print(f"{len(gdf_edges)} directed edges -> {len(rows)} streets "
           f"({len(rows) - n_ow} two-way, {n_ow} one-way)")
@@ -248,7 +288,9 @@ def main():
 
     nodes = [list(rel(gdf_nodes.loc[n, "x"], gdf_nodes.loc[n, "y"])) for n in used]
     edges, total_len, ow_len = [], 0.0, 0.0
-    for r, ln, w, ow in zip(rows, lines, widths, oneway):
+    name_table = sorted({n for n in street_names if n})
+    name_idx = {n: i for i, n in enumerate(name_table)}
+    for r, ln, w, ow, nm in zip(rows, lines, widths, oneway, street_names):
         coords = list(ln.coords)
         u, v = int(r["u"]), int(r["v"])
         ux, uy = gdf_nodes.loc[u, "x"], gdf_nodes.loc[u, "y"]
@@ -266,6 +308,8 @@ def main():
         if ow:
             edge["ow"] = 1
             ow_len += float(ln.length)
+        if nm:
+            edge["n"] = name_idx[nm]
         edges.append(edge)
 
     n_ow_out = sum(1 for e in edges if "ow" in e)
@@ -289,6 +333,8 @@ def main():
             "n_oneway_edges": n_ow_out,
             "n_twoway_edges": len(edges) - n_ow_out,
             "oneway_length_m": round(ow_len, 1),
+            "names": name_table,
+            "names_note": 'edge "n" = index into this list; edges without "n" have no OSM name',
         },
         "nodes": nodes,
         "edges": edges,
@@ -297,6 +343,9 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(out, separators=(",", ":")))
     share = ow_len / total_len if total_len else 0.0
+    n_named = sum(1 for e in edges if "n" in e)
+    print(f"street names: {n_named}/{len(edges)} streets named ({n_named / max(1, len(edges)):.0%}), "
+          f"{len(name_table)} distinct names")
     print(f"wrote {out_path}  ({out_path.stat().st_size / 1024:.0f} KB, "
           f"{len(edges)} streets, {total_len / 1000:.1f} km of centreline; "
           f"{n_ow_out} one-way = {ow_len / 1000:.1f} km, {share:.0%} of the length)")

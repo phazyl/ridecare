@@ -57,7 +57,7 @@ GM.prepareNetwork = function prepareNetwork(raw) {
     if (e.ow === -1) {                                                // allowed v -> u: flip so that u -> v is the legal way
       const p = [];
       for (let j = e.p.length - 2; j >= 0; j -= 2) p.push(e.p[j], e.p[j + 1]);
-      src.push({ u: e.v, v: e.u, w: e.w, p, ow: 1 });
+      src.push({ u: e.v, v: e.u, w: e.w, p, ow: 1, n: e.n });
     } else src.push(e);
   }
   const E = src.length;
@@ -71,6 +71,8 @@ GM.prepareNetwork = function prepareNetwork(raw) {
     E, N,
     u: new Int32Array(E), v: new Int32Array(E), w0: new Float32Array(E), len: new Float32Array(E),
     ow: new Uint8Array(E),             // 1 = one-way, legal direction u -> v
+    nm: new Int16Array(E).fill(-1),    // street-name index into net.names (-1 = unnamed), from export_network.py
+    names: (raw.meta && Array.isArray(raw.meta.names)) ? raw.meta.names : [],
     off: new Int32Array(E + 1), px: new Float32Array(P), py: new Float32Array(P), cum: new Float32Array(P),
     cumArea: new Float64Array(E), ewS: new Float32Array(E), bkt: new Uint8Array(E),
     bx0: new Float32Array(E), bx1: new Float32Array(E), by0: new Float32Array(E), by1: new Float32Array(E),
@@ -81,6 +83,7 @@ GM.prepareNetwork = function prepareNetwork(raw) {
   src.forEach((e, i) => {
     net.u[i] = e.u || 0; net.v[i] = e.v || 0; net.w0[i] = e.w > 0 ? e.w : 5; net.off[i] = k;
     net.ow[i] = e.ow === 1 ? 1 : 0;
+    if (Number.isInteger(e.n) && e.n >= 0 && e.n < net.names.length) net.nm[i] = e.n;
     let c = 0, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (let j = 0; j < e.p.length; j += 2) {
       const x = e.p[j], y = e.p[j + 1];

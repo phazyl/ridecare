@@ -1,0 +1,564 @@
+{
+ "_readme": "Year Slider config for the Greater Male' road simulator. Every value carries a status so nothing estimated is shown as official. Edit freely; app.js reads this file at start-up.",
+ "baseline": {
+  "year": 2024,
+  "fleet": 119093,
+  "status": "report",
+  "note": "IUM report active-fleet figure; data collected in 2024 (confirmed by project owner). Type mix = Table 3 as coded in app.js."
+ },
+ "years": [
+  2021,
+  2022,
+  2023,
+  2024,
+  2025,
+  2026
+ ],
+ "fleet_index_vs_2024": {
+  "_note": "Fleet of a vehicle group in a year divided by the same group in 2024. 2024 = 1 by construction. One series per vehicle type (data/years.json v2).",
+  "pickup": {
+   "values": [
+    0.8212,
+    0.8686,
+    0.9364,
+    1.0,
+    1.0509,
+    1.091
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Pick-Up' 2021-2023 (3,377 / 3,572 / 3,851) gives the 2021-2023 shape. 2023->2024 growth assumed 1.0679 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "scooter": {
+   "values": [
+    0.6734,
+    0.7884,
+    0.8765,
+    1.0,
+    1.1057,
+    1.1933
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Battery Scooter' 2021-2023 (2,185 / 2,558 / 2,844) gives the 2021-2023 shape. 2023->2024 growth assumed 1.1409 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "van": {
+   "values": [
+    0.7077,
+    0.7817,
+    0.8912,
+    1.0,
+    1.0916,
+    1.1666
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Van' 2021-2023 (1,856 / 2,050 / 2,337) gives the 2021-2023 shape. 2023->2024 growth assumed 1.1221 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "truck": {
+   "values": [
+    0.6962,
+    0.7668,
+    0.8863,
+    1.0,
+    1.0962,
+    1.1754
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Truck' 2021-2023 (1,212 / 1,335 / 1,543) gives the 2021-2023 shape. 2023->2024 growth assumed 1.1283 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "ebike": {
+   "values": [
+    0.488,
+    0.6225,
+    0.8,
+    1.0,
+    1.1875,
+    1.3545
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Electric bicycle' 2021-2023 (1,273 / 1,624 / 2,087) gives the 2021-2023 shape. 2023->2024 growth assumed 1.25 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "lorry": {
+   "values": [
+    0.9542,
+    0.9651,
+    0.9845,
+    1.0,
+    1.0118,
+    1.0208
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Lorry' 2021-2023 (788 / 797 / 813) gives the 2021-2023 shape. 2023->2024 growth assumed 1.0157 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "jeep": {
+   "values": [
+    0.7693,
+    0.8174,
+    0.9163,
+    1.0,
+    1.0685,
+    1.1234
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Jeep' 2021-2023 (560 / 595 / 667) gives the 2021-2023 shape. 2023->2024 growth assumed 1.0914 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "bus": {
+   "values": [
+    0.724,
+    0.8535,
+    0.8979,
+    1.0,
+    1.0852,
+    1.1546
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Bus' 2021-2023 (179 / 211 / 222) gives the 2021-2023 shape. 2023->2024 growth assumed 1.1137 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "bcar": {
+   "values": [
+    0.9328,
+    0.9451,
+    0.9771,
+    1.0,
+    1.0176,
+    1.031
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Battery Car' 2021-2023 (379 / 384 / 397) gives the 2021-2023 shape. 2023->2024 growth assumed 1.0235 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "amb": {
+   "values": [
+    0.4733,
+    0.7695,
+    0.8,
+    1.0,
+    1.1875,
+    1.3545
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Ambulance' 2021-2023 (155 / 252 / 262) gives the 2021-2023 shape. 2023->2024 growth assumed 1.25 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "btri": {
+   "values": [
+    0.5167,
+    0.6489,
+    0.8025,
+    1.0,
+    1.1846,
+    1.3486
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Battery tricycle' 2021-2023 (2,400 / 3,014 / 3,727) gives the 2021-2023 shape. 2023->2024 growth assumed 1.2462 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "minivan": {
+   "values": [
+    0.2087,
+    0.5913,
+    0.8,
+    1.0,
+    1.1875,
+    1.3545
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Minivan' 2021-2023 (6 / 17 / 23) gives the 2021-2023 shape. 2023->2024 growth assumed 1.25 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "bpick": {
+   "values": [
+    0.7936,
+    0.8928,
+    0.9258,
+    1.0,
+    1.0601,
+    1.1079
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Battery Pick-up' 2021-2023 (24 / 27 / 28) gives the 2021-2023 shape. 2023->2024 growth assumed 1.0801 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "mtruck": {
+   "values": [
+    0.7155,
+    0.7752,
+    0.8944,
+    1.0,
+    1.0885,
+    1.1608
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Mini Truck' 2021-2023 (12 / 13 / 15) gives the 2021-2023 shape. 2023->2024 growth assumed 1.118 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "escoot": {
+   "values": [
+    0.6734,
+    0.7884,
+    0.8765,
+    1.0,
+    1.1057,
+    1.1933
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "NBS Table 11.3 national registered 'Battery Scooter' 2021-2023 (2,185 / 2,558 / 2,844) gives the 2021-2023 shape. 2023->2024 growth assumed 1.1409 (geometric mean of 2021-23 growth, limited to 0.97-1.25); 2025 and 2026 growth damped x0.75 per year. 2024 = 1 by construction. No published source beyond 2023."
+  },
+  "other": {
+   "values": [
+    0.6994,
+    0.7878,
+    0.8876,
+    1.0,
+    1.0949,
+    1.1729
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "assumption",
+    "assumption"
+   ],
+   "source": "Residual group (NBS total minus every mapped row: 3,299 / 3,716 / 4,187), mostly construction/industrial plant, tricycles and other. Same extrapolation rule (growth 1.1266); 2025-2026 are assumptions."
+  },
+  "moto": {
+   "values": [
+    0.7634,
+    0.8397,
+    0.9389,
+    1.0,
+    1.0611,
+    1.0687
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "estimate",
+    "estimate"
+   ],
+   "source": "Owner-supplied multipliers vs 2021 (1.00,1.10,1.23,1.31,1.39,1.40) divided by the 2024 value. 2022 and 2023 agree with NBS Table 11.3 (1.107 and 1.224 vs 2021). 2024-2026 are not in the published NBS table (ends 2023) and are unverified."
+  },
+  "car": {
+   "values": [
+    0.6232,
+    0.724,
+    0.8722,
+    1.0,
+    1.1278,
+    1.1729
+   ],
+   "status": [
+    "nbs_shape",
+    "nbs_shape",
+    "nbs_shape",
+    "baseline",
+    "estimate",
+    "estimate"
+   ],
+   "source": "2021-2023 shape from NBS Table 11.3 cars (8,606 / 9,998 / 12,044). Level anchored by assuming 2023->2024 growth of 1.147 (owner-supplied 1.33/1.16). 2025-2026 growth from owner-supplied 1.50 and 1.56 vs 2021. The owner's 2021-2022 car multipliers (1.00, 0.97) conflict with NBS (+16%) and were not used."
+  }
+ },
+ "type_group": {
+  "moto": "moto",
+  "car": "car",
+  "pickup": "pickup",
+  "scooter": "scooter",
+  "van": "van",
+  "truck": "truck",
+  "ebike": "ebike",
+  "lorry": "lorry",
+  "jeep": "jeep",
+  "bus": "bus",
+  "bcar": "bcar",
+  "amb": "amb",
+  "btri": "btri",
+  "minivan": "minivan",
+  "bpick": "bpick",
+  "mtruck": "mtruck",
+  "escoot": "escoot",
+  "other": "other"
+ },
+ "accidents": {
+  "greater_male_share": 0.8,
+  "share_note": "Owner assumption: 80% of Maldives Police Service accident counts are in Greater Male'. Not verified against the police data.",
+  "series": [
+   {
+    "year": 2021,
+    "police": 1562,
+    "status": "police_full_year"
+   },
+   {
+    "year": 2022,
+    "police": 1615,
+    "status": "police_full_year"
+   },
+   {
+    "year": 2023,
+    "police": 2299,
+    "status": "police_full_year"
+   },
+   {
+    "year": 2024,
+    "police": 2882,
+    "status": "police_full_year"
+   },
+   {
+    "year": 2025,
+    "police": 3079,
+    "status": "police_full_year"
+   },
+   {
+    "year": 2026,
+    "police": 3015,
+    "status": "annualised_estimate",
+    "raw": 2379,
+    "days_covered": 288,
+    "note": "2,379 recorded up to mid-October 2026 scaled by 365/288. Seasonality ignored."
+   }
+  ],
+  "source": "Maldives Police Service counts as compiled by MV+ (supplied by owner). Not the 16,242 five-year figure, which could not be reconciled with this series."
+ },
+ "model": {
+  "form": "collisions = A_base * (fleet / fleet_base) ^ beta",
+  "beta_default": 1.5,
+  "beta_band": [
+   1.0,
+   1.5,
+   2.0
+  ],
+  "fit_years": [
+   2021,
+   2022,
+   2023,
+   2024,
+   2025
+  ],
+  "caveat": "beta is a modelling choice, not a measured causal elasticity. Reporting changes, post-COVID recovery and growth in Hulhumale also raise recorded accidents."
+ },
+ "nbs_table_11_3_national_registered": {
+  "source": "https://statisticsmaldives.gov.mv/yearbook/2024/wp-content/uploads/sites/11/2024/11/11.3.pdf",
+  "note": "National, cumulative registrations (not active, not Greater Male' only). Table ends 2023.",
+  "years": [
+   2021,
+   2022,
+   2023
+  ],
+  "total": [
+   142498,
+   158743,
+   177281
+  ],
+  "motorcycle": [
+   116187,
+   128580,
+   142234
+  ],
+  "car": [
+   8606,
+   9998,
+   12044
+  ]
+ },
+ "type_group_note": "Each of the 18 types has its own series. scooter and escoot both use NBS 'Battery Scooter'; 'other' is the residual of the NBS total. Motorcycle and car series are unchanged from v1.",
+ "nbs_table_11_3_by_type": {
+  "years": [
+   2021,
+   2022,
+   2023
+  ],
+  "rows": {
+   "Total": [
+    142498,
+    158743,
+    177281
+   ],
+   "Motor cycle": [
+    116187,
+    128580,
+    142234
+   ],
+   "Car": [
+    8606,
+    9998,
+    12044
+   ],
+   "Bus": [
+    179,
+    211,
+    222
+   ],
+   "Pick-Up": [
+    3377,
+    3572,
+    3851
+   ],
+   "Lorry": [
+    788,
+    797,
+    813
+   ],
+   "Van": [
+    1856,
+    2050,
+    2337
+   ],
+   "Jeep": [
+    560,
+    595,
+    667
+   ],
+   "Ambulance": [
+    155,
+    252,
+    262
+   ],
+   "Truck": [
+    1212,
+    1335,
+    1543
+   ],
+   "Battery Scooter": [
+    2185,
+    2558,
+    2844
+   ],
+   "Mini Truck": [
+    12,
+    13,
+    15
+   ],
+   "Battery Car": [
+    379,
+    384,
+    397
+   ],
+   "Battery tricycle": [
+    2400,
+    3014,
+    3727
+   ],
+   "Electric bicycle": [
+    1273,
+    1624,
+    2087
+   ],
+   "Battery Pick-up": [
+    24,
+    27,
+    28
+   ],
+   "Minivan": [
+    6,
+    17,
+    23
+   ],
+   "_residual": [
+    3299,
+    3716,
+    4187
+   ]
+  },
+  "note": "National cumulative registrations by type, used only for the 2021-2023 shape of each type. Sim counts come from the IUM report Table 3, not from NBS."
+ }
+}

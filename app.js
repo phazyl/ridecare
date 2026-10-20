@@ -53,8 +53,8 @@ const state = {
   areaKm2: AREA.osmnx, parkShare: DEFAULTS.parkShare / 100, parkStrip: DEFAULTS.parkStrip,
   jam: DEFAULTS.jam, patience: DEFAULTS.patience, simSpeed: DEFAULTS.simSpeed, dotPx: DEFAULTS.dotPx,
   paused: false, heat: true, slow: false, synthetic: false,
-  year: 2024, yearCustom: false,
-  beta: COL.beta, share: COL.share, secPerDay: COL.secPerDay, colOn: true,
+  year: 2024, yearCustom: false, advBusy: false,
+  beta: COL.beta, share: COL.share, secPerDay: COL.secPerDay, colOn: true, showHot: true,
 };
 let net = null;                      // street geometry for drawing (the worker has its own copy)
 let sim = null;                      // {post(msg, transfer), kind}
@@ -64,6 +64,7 @@ let run = { events: 0, days: 0 };
 let simRate = 0;
 let needDraw = true;
 let yearsCfg = null, fit = null;
+let hot = [], hotDirty = false, rawNetwork = null;   // advisor: live hotspots from the worker, raw street data for what-if runs
 const markers = [];                  // collision flashes {x, y, t}
 const FP = (t) => TYPES[t].L * TYPES[t].W;
 
@@ -75,7 +76,7 @@ function paramsMsg() {
   return {
     P: { areaKm2: state.areaKm2, parkShare: state.parkShare, parkStrip: state.parkStrip, jam: state.jam, slow: state.slow, patience: state.patience },
     C: { on: state.colOn, perDay: A / 365, secPerDay: state.secPerDay },
-    simSpeed: state.simSpeed, paused: state.paused, hidden: typeof document !== 'undefined' && !!document.hidden,
+    simSpeed: state.simSpeed, paused: state.paused || state.advBusy, hidden: typeof document !== 'undefined' && !!document.hidden,
   };
 }
 const pushParams = () => { if (sim) sim.post({ cmd: 'params', p: paramsMsg() }); };
@@ -84,6 +85,10 @@ const pushDims = () => { if (sim) sim.post({ cmd: 'dims', dims: TYPES.map((t) =>
 
 function onMsg(m) {
   if (m.type === 'frame') onFrame(m);
+  else if (m.type === 'error') {
+    if (typeof console !== 'undefined') console.error(m.message);
+    const b = $('banner'); b.style.display = 'block'; b.textContent = 'Simulation error: ' + String(m.message).split('\n')[0];
+  }
 }
 
 function onFrame(m) {
@@ -94,6 +99,7 @@ function onFrame(m) {
   if (old && sim) sim.post({ cmd: 'recycle', buf: old.buf }, [old.buf]);   // hand the previous buffer back for reuse
   if (net) net.bkt.set(m.bkt);
   stats = m.stats; run = m.run; simRate = m.simRate;
+  if (m.hot) { hot = m.hot; hotDirty = true; }
   for (let t = 0; t < nT; t++) placed[t] = m.placed[t];
   const t0 = now();
   for (const k of m.markers) markers.push({ x: k.x, y: k.y, t: t0 });
@@ -257,6 +263,28 @@ function draw() {
   }
   ctx.globalAlpha = 1;
 
+  // ---- advisor hotspots --------------------------------------------------
+  if (state.showHot && hot.length) {
+    ctx.lineWidth = 2.5;
+    hot.forEach((h, k) => {
+      const X = (h.x - cx) * sc + hw, Y = hh - (h.y - cy) * sc;
+      if (X < -60 || X > cw + 60 || Y < -60 || Y > ch + 60) return;
+      const col = hotColor(h), r = Math.max(14, Math.min(46, 6 + Math.sqrt(h.q) * 1.1));
+      ctx.strokeStyle = col; ctx.fillStyle = col;
+      ctx.globalAlpha = 0.9; ctx.beginPath(); ctx.arc(X, Y, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 0.12; ctx.beginPath(); ctx.arc(X, Y, r, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1; ctx.fillStyle = '#0d1117'; ctx.beginPath(); ctx.arc(X, Y, 9, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = col; ctx.font = 'bold 11px system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(k + 1), X, Y + 0.5); ctx.textBaseline = 'alphabetic';
+      const nm = hotName(h);
+      if (nm && sc >= 0.2) {                                            // street name under the ring once zoomed in a little
+        ctx.font = '600 12px system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = '#0d1117';
+        ctx.strokeText(nm, X, Y + r + 14); ctx.fillStyle = '#e6edf3'; ctx.fillText(nm, X, Y + r + 14); ctx.lineWidth = 2.5; ctx.strokeStyle = col;
+      }
+      ctx.textAlign = 'left';
+    });
+  }
+
   // ---- scale bar -------------------------------------------------------
   const m = niceBar(sc), px = m * sc;
   const bx = cw - 24 - px, by = ch - 22;
@@ -404,11 +432,22 @@ function drawAccChart() {
 /* =====================================================================
  * 8. UI
  * ===================================================================== */
+const MAJOR = ['moto', 'car', 'pickup', 'scooter', 'van', 'truck', 'lorry', 'jeep', 'bus', 'ebike'];   // sliders always visible; the rest sit in a drop-down
+const typeRows = [];
+// swatch = the type's colour at true proportions (3.2 px per metre, limited so every type stays visible)
+function refreshLegend(i) {
+  const row = typeRows[i], t = TYPES[i]; if (!row) return;
+  const sw = row.querySelector('.sw');
+  sw.style.width = Math.max(5, Math.min(30, t.L * 3.2)) + 'px';
+  sw.style.height = Math.max(3, Math.min(9, t.W * 3.2)) + 'px';
+  row.querySelector('small').textContent = t.L.toFixed(1) + ' × ' + t.W.toFixed(1) + ' m · ' + Math.round(t.v * 3.6) + ' km/h';
+}
 function buildTypeRows() {
-  const box = $('types'); box.innerHTML = '';
+  const box = $('types'), box2 = $('typesOther'); box.innerHTML = ''; box2.innerHTML = ''; typeRows.length = 0;
+  let nOther = 0;
   TYPES.forEach((t, i) => {
     const row = document.createElement('div'); row.className = 'trow';
-    row.innerHTML = `<span class="dot" style="background:${t.color}"></span><label>${t.name}</label>
+    row.innerHTML = `<span class="swc"><span class="sw" style="background:${t.color}"></span></span><label class="nm">${t.name}<small></small></label>
       <input type="number" min="0" step="1" class="cnum">
       <input type="range" class="crange" min="0" max="${t.max}" step="${t.step || 1}">`;
     const num = row.querySelector('.cnum'), rng = row.querySelector('.crange');
@@ -416,13 +455,16 @@ function buildTypeRows() {
     num.addEventListener('change', () => { num.value = counts[i]; });
     rng.addEventListener('input', () => { setCount(i, rng.value); num.value = counts[i]; markCustom(); });
     row._num = num; row._rng = rng;
-    box.appendChild(row);
+    typeRows[i] = row; refreshLegend(i);
+    if (MAJOR.includes(t.id)) box.appendChild(row); else { box2.appendChild(row); nOther++; }
   });
+  $('otherSum').textContent = 'Other vehicle types (' + nOther + ')';
 }
 
 function syncTypeInputs() {
-  const rows = $('types').children;
-  for (let i = 0; i < rows.length; i++) { rows[i]._num.value = counts[i]; rows[i]._rng.value = counts[i]; }
+  for (let i = 0; i < typeRows.length; i++) { typeRows[i]._num.value = counts[i]; typeRows[i]._rng.value = counts[i]; }
+  let o = 0; TYPES.forEach((t, i) => { if (!MAJOR.includes(t.id)) o += counts[i]; });
+  const el = $('otherSum'); if (el) el.textContent = el.textContent.replace(/\s·.*$/, '') + ' · ' + fmt(o) + ' vehicles';
 }
 
 function buildDims() {
@@ -438,7 +480,7 @@ function buildDims() {
       const val = parseFloat(inp.value); if (!(val > 0)) return;
       const k = inp.dataset.k;
       if (k === 'v') t.v = val / 3.6; else t[k] = val;
-      pushDims();
+      refreshLegend(TYPES.indexOf(t)); pushDims();
     }));
     tb.appendChild(tr);
   });
@@ -554,6 +596,7 @@ function updateStats() {
   const unfit = req - total;
   $('sPlaced').textContent = unfit > 0 ? fmt(total) + ' of ' + fmt(req) + ' · ' + fmt(unfit) + ' do not fit' : fmt(total) + ' of ' + fmt(req);
   $('sPlaced').style.color = unfit > 0 ? '#f85149' : '';
+  updateNoRoom(unfit, req, areaM2);
   $('sBlocked').textContent = stats.mv ? (stats.blockedN / stats.mv * 100).toFixed(0) + ' % waiting' : '–';
   $('sReloc').textContent = stats.relocN != null ? fmt(stats.relocN) : '–';
   const kmh = stats.mv ? stats.sumV / stats.mv * 3.6 : 0;
@@ -574,10 +617,185 @@ function updateStats() {
 }
 
 /* =====================================================================
+ * 8b. "NO ROOM" BUBBLE
+ * ===================================================================== */
+function updateNoRoom(unfit, req, areaM2) {
+  const box = $('noRoom');
+  if (unfit <= 0 || !req) { box.hidden = true; return; }
+  box.hidden = false;
+  $('noRoomTxt').textContent = '⚠ ' + fmt(unfit) + ' vehicle' + (unfit === 1 ? '' : 's') + ' ha' + (unfit === 1 ? 's' : 've') + ' no room';
+  if (!box.classList.contains('open')) return;                       // body is built only while it is open (cheap)
+  let reqFoot = 0, plFoot = 0;
+  for (let t = 0; t < nT; t++) { reqFoot += counts[t] * FP(t); plFoot += placed[t] * FP(t); }
+  const miss = TYPES.map((t, i) => [t.name, counts[i] - placed[i]]).filter((x) => x[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  $('noRoomBody').innerHTML =
+    `<b>Why they are not on the street</b><br>` +
+    `Vehicles may never overlap and may not stand inside a junction. The ${fmt(req)} vehicles requested would cover ` +
+    `<b>${(reqFoot / areaM2 * 100).toFixed(1)} %</b> of the ${state.areaKm2.toFixed(3)} km² street surface (footprints only, no gaps). ` +
+    `${fmt(req - unfit)} fit, covering ${(plFoot / areaM2 * 100).toFixed(1)} %; for the others the simulation cannot find a free spot.<br>` +
+    `<span class="mut">Most affected: ${miss.map((x) => x[0] + ' ' + fmt(x[1])).join(', ')}.</span><br>` +
+    `<span class="mut">The simulation keeps retrying as traffic moves and gaps open, so this number can fall. In reality such vehicles would be parked off-street, queuing to enter, or not on the road at the same time. Raising the road area or lowering the fleet also helps.</span>`;
+}
+
+/* =====================================================================
+ * 8c. TRAFFIC ADVISOR (hotspots + what-if tests)
+ * ===================================================================== */
+const LEVELS = [
+  { max: 0.15, name: 'Free-flowing', col: '#3fb950', txt: 'Most vehicles are moving.' },
+  { max: 0.35, name: 'Busy', col: '#a3c02b', txt: 'Queues form at some junctions.' },
+  { max: 0.55, name: 'Congested', col: '#e3a008', txt: 'A large share of vehicles is waiting.' },
+  { max: 1.01, name: 'Severe', col: '#f85149', txt: 'Most vehicles are stopped; the network is close to gridlock.' },
+];
+const hotName = (h) => (net && h.nm >= 0 && net.names[h.nm]) || null;
+const hotColor = (h) => (h.share > 0.75 ? '#f85149' : h.share > 0.5 ? '#e3a008' : '#a3c02b');
+
+const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function hotInfo(h) {
+  const tags = [], acts = [];
+  const mvN = Math.max(1, h.mv);
+  const goods = h.goods / mvN, park = h.n ? h.parked / h.n : 0;
+  if (h.cov >= 1) tags.push('street at packing limit'); else if (h.cov >= 0.8) tags.push('street nearly full');
+  if (h.w < 6.5) tags.push('narrow (' + h.w.toFixed(1) + ' m)');
+  if (goods >= 0.06) tags.push('goods vehicles ' + Math.round(goods * 100) + ' %');
+  if (park >= 0.15) tags.push('parked ' + Math.round(park * 100) + ' %');
+  if (h.mix.length) { const t = TYPES[h.mix[0][0]], p = Math.round(100 * h.mix[0][1] / mvN); if (p >= 50) tags.push(t.name.toLowerCase() + 's ' + p + ' %'); }
+  if (goods >= 0.06) acts.push('Limit goods vehicles (vans, pickups, lorries) to an off-peak delivery window.');
+  if (park >= 0.15) acts.push('Clear kerbside parking here: enforcement, or move it to off-street parking.');
+  if (h.w < 6.5 && !h.ow) acts.push('Trial one-way operation on this street.');
+  if (h.cov >= 1) acts.push('Street is full: divert through-traffic to parallel streets, or meter entry at the upstream junction.');
+  if (!acts.length) acts.push('Review priority and enforcement at both junctions; look for illegal stopping.');
+  return { tags, acts: acts.slice(0, 3) };
+}
+
+function renderHot() {
+  const lv = stats.mv ? stats.blockedN / stats.mv : 0;
+  const L = LEVELS.find((x) => lv < x.max) || LEVELS[3];
+  const chip = $('advChip'); chip.textContent = L.name; chip.style.background = L.col;
+  $('advHead').textContent = stats.mv ? Math.round(lv * 100) + ' % of vehicles waiting. ' + L.txt : '';
+  const box = $('hotList');
+  if (!hot.length) { box.innerHTML = '<div class="note">No street segment has a significant queue right now.</div>'; return; }
+  box.innerHTML = '';
+  hot.slice(0, 5).forEach((h, k) => {
+    const info = hotInfo(h), d = document.createElement('div');
+    d.className = 'hot'; d.style.borderLeftColor = hotColor(h);
+    const nm = hotName(h), geo = `${Math.round(h.len)} m, ${h.w.toFixed(1)} m wide, ${h.ow ? 'one-way' : 'two-way'}`;
+    d.innerHTML = `<div class="h1"><span>${k + 1}. ${nm ? esc(nm) : geo + ' (unnamed)'}</span><span>${fmt(h.q)} waiting</span></div>` +
+      `<div class="h2">${nm ? geo + ' · ' : ''}${Math.round(h.share * 100)} % of time stopped · ${fmt(h.n)} vehicles on this street</div>` +
+      (info.tags.length ? `<div class="tags">${info.tags.map((x) => `<span class="tag">${x}</span>`).join('')}</div>` : '') +
+      `<ul>${info.acts.map((x) => `<li>${x}</li>`).join('')}</ul>`;
+    d.addEventListener('click', () => { cam.x = h.x; cam.y = h.y; cam.scale = Math.max(cam.scale, 3.5); needDraw = true; });
+    box.appendChild(d);
+  });
+}
+
+/* ---- what-if tests: each scenario runs headless in its own worker ---- */
+const ADV = { defs: [], res: {}, prog: {}, queue: [], workers: new Set(), busy: false, t0: 0, conc: 1 };
+const GOODS_IDS = ['pickup', 'van', 'truck', 'lorry', 'mtruck', 'other'];
+function scenarioDefs() {
+  const c = Array.from(counts), f = (k) => c.map((n) => Math.round(n * k));
+  const defs = [{ id: 'base', label: 'Now (no measure)', counts: c, P: {} }];
+  defs.push({ id: 'rot', label: 'Plate rotation: 1 weekday in 5 off the road (−20 % vehicles)', counts: f(0.8), P: {} });
+  defs.push({ id: 'goods', label: 'Goods vehicles off-peak only (−50 % pickups, vans, trucks, lorries)',
+    counts: c.map((n, i) => Math.round(GOODS_IDS.includes(TYPES[i].id) ? n * 0.5 : n)), P: {} });
+  const prop = c.map((n, i) => Math.round(n * (TYPES[i].count > 0 ? TYPES[i].proposed / TYPES[i].count : 1)));
+  defs.push({ id: 'ium', label: 'IUM report proposal (Table 51), applied to this fleet', counts: prop, P: {} });
+  if (state.parkShare > 0) defs.push({ id: 'park', label: 'Clear kerbside parking (parked vehicles move off-street)', counts: f(1 - state.parkShare), P: { parkShare: 0 } });
+  defs.push({ id: 'deep', label: 'Deep cut: −40 % vehicles (reference)', counts: f(0.6), P: {} });
+  return defs;
+}
+const advUi = () => ({ run: $('advRun'), cancel: $('advCancel'), prog: $('advProg'), fill: $('advProgFill'), txt: $('advProgTxt'), res: $('advRes') });
+
+function advStart() {
+  if (ADV.busy) return;
+  const u = advUi();
+  if (typeof Worker === 'undefined' || !rawNetwork || requestedTotal() === 0) {
+    u.txt.textContent = requestedTotal() === 0 ? 'Add vehicles first.' : 'Background workers are not available in this browser, so the tests cannot run.'; return;
+  }
+  ADV.defs = scenarioDefs(); ADV.res = {}; ADV.prog = {}; ADV.queue = ADV.defs.slice(); ADV.busy = true; ADV.t0 = now();
+  ADV.conc = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1));
+  state.advBusy = true; pushParams();
+  u.run.disabled = true; u.cancel.hidden = false; u.prog.hidden = false; u.fill.style.width = '0%'; u.res.innerHTML = '';
+  advPump(); advProgress();
+}
+function advPump() {
+  while (ADV.busy && ADV.workers.size < ADV.conc && ADV.queue.length) {
+    const d = ADV.queue.shift(), w = new Worker('worker.js');
+    ADV.workers.add(w); ADV.prog[d.id] = 0;
+    w.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === 'scenarioProgress') { ADV.prog[m.id] = m.frac; advProgress(); }
+      else if (m.type === 'scenarioResult') { ADV.res[m.id] = m.res; ADV.prog[m.id] = 1; w.terminate(); ADV.workers.delete(w); advProgress(); advPump(); advMaybeDone(); }
+      else if (m.type === 'error') advFail(String(m.message).split('\n')[0]);
+    };
+    w.onerror = () => advFail('a test worker failed to start');
+    const P = Object.assign(paramsMsg().P, d.P);
+    w.postMessage({ cmd: 'scenario', id: d.id, raw: rawNetwork, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: { P }, counts: d.counts, warm: 25, meas: 15 });
+  }
+}
+function advProgress() {
+  const u = advUi(), n = ADV.defs.length;
+  let f = 0; for (const d of ADV.defs) f += ADV.prog[d.id] || 0;
+  const done = Object.keys(ADV.res).length;
+  u.fill.style.width = (100 * f / n).toFixed(0) + '%';
+  u.txt.textContent = 'Tested ' + done + ' of ' + n + ' · ' + Math.round((now() - ADV.t0) / 1000) + ' s elapsed';
+}
+function advStop() {
+  for (const w of ADV.workers) w.terminate();
+  ADV.workers.clear(); ADV.queue = []; ADV.busy = false; state.advBusy = false; pushParams();
+  const u = advUi(); u.run.disabled = false; u.cancel.hidden = true; u.prog.hidden = true;
+}
+function advFail(msg) { advStop(); advUi().txt.textContent = 'Test stopped: ' + msg; }
+function advMaybeDone() {
+  if (Object.keys(ADV.res).length < ADV.defs.length) return;
+  advStop(); advUi().txt.textContent = 'Finished in ' + Math.round((now() - ADV.t0) / 1000) + ' s.';
+  advShowResults();
+}
+const NOISE_PP = 2;   // differences smaller than this (percentage points of free-flow speed) are treated as run-to-run noise
+function advShowResults() {
+  const b = ADV.res.base, rows = ADV.defs.map((d) => ({ d, r: ADV.res[d.id] }));
+  const gain = (r) => r.speedPct - b.speedPct;
+  const removed = (r) => b.placed - r.placed;
+  const body = rows.slice(1).sort((x, y) => gain(y.r) - gain(x.r));
+  const cell = (v, cls) => `<td class="${cls || ''}">${v}</td>`;
+  const fmtPP = (v) => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(0);
+  let html = '<table class="res"><tr><th>Measure</th><th>Vehicles</th><th>Waiting</th><th>Speed</th><th>Gain</th></tr>';
+  html += `<tr><td>${rows[0].d.label}</td>${cell(fmt(b.placed))}${cell(b.waitPct.toFixed(0) + ' %')}${cell(b.speedPct.toFixed(0) + ' %')}${cell('–')}</tr>`;
+  for (const { d, r } of body) {
+    const g = gain(r);
+    html += `<tr><td>${d.label}</td>${cell(fmt(r.placed))}${cell(r.waitPct.toFixed(0) + ' %')}${cell(r.speedPct.toFixed(0) + ' %')}` +
+      cell(Math.abs(g) < NOISE_PP ? 'no clear change' : fmtPP(g) + ' pts', Math.abs(g) < NOISE_PP ? 'flat' : g > 0 ? 'good' : '') + '</tr>';
+  }
+  html += '</table><div class="note" style="margin-top:0">Vehicles = on the street. Waiting = share of moving vehicles stopped. Speed = mean speed as % of free-flow; Gain = change in that % vs. now.</div>';
+  const cand = body.filter((x) => x.d.id !== 'deep');
+  const best = cand.length ? cand.reduce((p, q) => (gain(q.r) > gain(p.r) ? q : p)) : null;
+  const eff = cand.filter((x) => removed(x.r) >= 200 && gain(x.r) >= NOISE_PP).sort((x, y) => gain(y.r) / removed(y.r) - gain(x.r) / removed(x.r))[0];
+  let reco;
+  if (!best || gain(best.r) < NOISE_PP) {
+    reco = `None of the tested measures changes traffic flow clearly in this model (speed stays near ${b.speedPct.toFixed(0)} % of free-flow).` +
+      (rows.find((x) => x.d.id === 'deep') ? ` Only the deep cut (−40 %) is shown for reference: ${fmtPP(gain(ADV.res.deep))} pts.` : '');
+  } else {
+    reco = `<b>Largest improvement:</b> ${best.d.label}. Mean speed ${b.speedPct.toFixed(0)} % → ${best.r.speedPct.toFixed(0)} % of free-flow, waiting ${b.waitPct.toFixed(0)} % → ${best.r.waitPct.toFixed(0)} %, with ${fmt(Math.max(0, removed(best.r)))} fewer vehicles on the street.`;
+    if (eff && eff.d.id !== best.d.id) reco += `<br><b>Most effective per vehicle removed:</b> ${eff.d.label} (${(gain(eff.r) / removed(eff.r) * 1000).toFixed(1)} pts per 1,000 vehicles).`;
+  }
+  reco += `<br><span style="color:var(--mut)">Relative comparison inside an uncalibrated model, not a forecast. Gains under ${NOISE_PP} points are shown as “no clear change” (repeat runs differed by under 1 point in testing).</span>`;
+  advUi().res.innerHTML = html + `<div class="reco">${reco}</div>`;
+}
+function bindAdvisor() {
+  $('advRun').addEventListener('click', advStart);
+  $('advCancel').addEventListener('click', () => { advStop(); advUi().txt.textContent = 'Cancelled.'; });
+  $('hotChk').addEventListener('change', (ev) => { state.showHot = ev.target.checked; needDraw = true; });
+  $('noRoomBtn').addEventListener('click', () => {
+    const box = $('noRoom'); box.classList.toggle('open'); $('noRoomBtn').setAttribute('aria-expanded', box.classList.contains('open'));
+    updateStats();
+  });
+}
+
+/* =====================================================================
  * 9. MAIN LOOP (drawing only when something changed)
  * ===================================================================== */
 let lastStatsT = 0;
 function raf(t) {
+  if (hotDirty) { hotDirty = false; renderHot(); needDraw = true; }
   if (needDraw || markers.length) { needDraw = false; draw(); }
   if (t - lastStatsT > 250) { lastStatsT = t; updateStats(); }
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(raf);
@@ -592,11 +810,12 @@ async function loadJson(url) {
 }
 
 async function init() {
-  buildTypeRows(); buildDims(); bindUI();
+  buildTypeRows(); buildDims(); bindUI(); bindAdvisor();
   resize();
   if (typeof ResizeObserver === 'function') new ResizeObserver(() => { resize(); }).observe(cv.parentElement);
   const [rawNet, years] = await Promise.all([loadJson('data/network.json'), loadJson('data/years.json')]);
   const raw = rawNet || GM.makeSyntheticNetwork();
+  rawNetwork = raw;
   state.synthetic = !rawNet;
   if (state.synthetic) {
     const b = $('banner'); b.style.display = 'block';
