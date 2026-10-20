@@ -43,13 +43,23 @@ GM.TYPES = [
 
 /* ---------------------------------------------------------------------------
  * Street network.  Raw format (data/network.json):
- *   { meta: {area_m2}, nodes: [...], edges: [ {u, v, w, p:[x0,y0,x1,y1,...]} ] }
- * x/y in metres (y up), w = street width in metres, p = flat polyline.
+ *   { meta: {area_m2}, nodes: [...], edges: [ {u, v, w, p:[x0,y0,x1,y1,...], ow?} ] }
+ * x/y in metres (y up), w = street width in metres, p = flat polyline running from node u to node v.
+ * ow (optional): 1 = one-way street, traffic may only travel from u to v; absent/0 = two-way.
+ *                (-1 = one-way from v to u is also accepted and is flipped on load.)
  * prepareNetwork() turns it into typed arrays; applyRoadArea() scales the widths so that the
  * total street surface equals the chosen area (this is what the "road area" slider drives).
  * ------------------------------------------------------------------------- */
 GM.prepareNetwork = function prepareNetwork(raw) {
-  const src = raw.edges.filter((e) => e && e.p && e.p.length >= 4);   // need at least two points
+  const src = [];
+  for (const e of raw.edges) {
+    if (!e || !e.p || e.p.length < 4) continue;                       // need at least two points
+    if (e.ow === -1) {                                                // allowed v -> u: flip so that u -> v is the legal way
+      const p = [];
+      for (let j = e.p.length - 2; j >= 0; j -= 2) p.push(e.p[j], e.p[j + 1]);
+      src.push({ u: e.v, v: e.u, w: e.w, p, ow: 1 });
+    } else src.push(e);
+  }
   const E = src.length;
   let P = 0, maxNode = (raw.nodes ? raw.nodes.length : 0) - 1;
   for (const e of src) {
@@ -60,6 +70,7 @@ GM.prepareNetwork = function prepareNetwork(raw) {
   const net = {
     E, N,
     u: new Int32Array(E), v: new Int32Array(E), w0: new Float32Array(E), len: new Float32Array(E),
+    ow: new Uint8Array(E),             // 1 = one-way, legal direction u -> v
     off: new Int32Array(E + 1), px: new Float32Array(P), py: new Float32Array(P), cum: new Float32Array(P),
     cumArea: new Float64Array(E), ewS: new Float32Array(E), bkt: new Uint8Array(E),
     bx0: new Float32Array(E), bx1: new Float32Array(E), by0: new Float32Array(E), by1: new Float32Array(E),
@@ -69,6 +80,7 @@ GM.prepareNetwork = function prepareNetwork(raw) {
   const b = net.bounds;
   src.forEach((e, i) => {
     net.u[i] = e.u || 0; net.v[i] = e.v || 0; net.w0[i] = e.w > 0 ? e.w : 5; net.off[i] = k;
+    net.ow[i] = e.ow === 1 ? 1 : 0;
     let c = 0, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (let j = 0; j < e.p.length; j += 2) {
       const x = e.p[j], y = e.p[j + 1];
@@ -85,14 +97,16 @@ GM.prepareNetwork = function prepareNetwork(raw) {
   net.off[E] = k;
   net.A0 = sumA;
 
-  // adjacency (edge ids per node) for choosing the next street at a junction
+  // adjacency (edge ids per node) for choosing the next street at a junction.
+  // It lists the streets a vehicle may ENTER at that node: a two-way street at both of its ends,
+  // a one-way street only at its start (u), so nobody can be routed into a one-way street against its direction.
   const deg = new Int32Array(N + 1);
-  for (let i = 0; i < E; i++) { deg[net.u[i] + 1]++; deg[net.v[i] + 1]++; }
+  for (let i = 0; i < E; i++) { deg[net.u[i] + 1]++; if (!net.ow[i]) deg[net.v[i] + 1]++; }
   for (let i = 0; i < N; i++) deg[i + 1] += deg[i];
   net.adjOff = deg.slice();
   net.adjE = new Int32Array(deg[N]);
   const fill = deg.slice(0, N);
-  for (let i = 0; i < E; i++) { net.adjE[fill[net.u[i]]++] = i; net.adjE[fill[net.v[i]]++] = i; }
+  for (let i = 0; i < E; i++) { net.adjE[fill[net.u[i]]++] = i; if (!net.ow[i]) net.adjE[fill[net.v[i]]++] = i; }
 
   GM.applyRoadArea(net, 0.894);
   return net;

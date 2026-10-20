@@ -19,7 +19,7 @@ const { TYPES, MAX_VEHICLES } = GM;
  * 1. CONFIG
  * ===================================================================== */
 const AREA = { min: 0.80, max: 1.00, step: 0.001, osmnx: 0.894, report: 0.902 };
-const DEFAULTS = { parkShare: 0, parkStrip: 2.3, jam: 0.50, simSpeed: 10, dotPx: 2 };
+const DEFAULTS = { parkShare: 0, parkStrip: 2.3, jam: 0.50, patience: 5, simSpeed: 10, dotPx: 2 };
 const TODAY_TOTAL = 119093; // Table 3 = the 2024 baseline fleet
 const COL = { beta: 1.5, secPerDay: 20, share: 0.8, baseAcc: 2882, baseFleet: 119093 };
 
@@ -51,7 +51,7 @@ const counts = new Int32Array(nT);   // requested per type (what the sliders say
 const placed = new Int32Array(nT);   // reported by the worker: actually on the street, never overlapping
 const state = {
   areaKm2: AREA.osmnx, parkShare: DEFAULTS.parkShare / 100, parkStrip: DEFAULTS.parkStrip,
-  jam: DEFAULTS.jam, simSpeed: DEFAULTS.simSpeed, dotPx: DEFAULTS.dotPx,
+  jam: DEFAULTS.jam, patience: DEFAULTS.patience, simSpeed: DEFAULTS.simSpeed, dotPx: DEFAULTS.dotPx,
   paused: false, heat: true, slow: false, synthetic: false,
   year: 2024, yearCustom: false,
   beta: COL.beta, share: COL.share, secPerDay: COL.secPerDay, colOn: true,
@@ -73,7 +73,7 @@ const FP = (t) => TYPES[t].L * TYPES[t].W;
 function paramsMsg() {
   const A = expectedPerYear(requestedTotal(), state.beta);
   return {
-    P: { areaKm2: state.areaKm2, parkShare: state.parkShare, parkStrip: state.parkStrip, jam: state.jam, slow: state.slow },
+    P: { areaKm2: state.areaKm2, parkShare: state.parkShare, parkStrip: state.parkStrip, jam: state.jam, slow: state.slow, patience: state.patience },
     C: { on: state.colOn, perDay: A / 365, secPerDay: state.secPerDay },
     simSpeed: state.simSpeed, paused: state.paused, hidden: typeof document !== 'undefined' && !!document.hidden,
   };
@@ -492,6 +492,7 @@ function bindUI() {
   // parking & movement
   $('parkRange').addEventListener('input', (ev) => { state.parkShare = ev.target.value / 100; $('parkOut').textContent = ev.target.value + ' %'; pushParams(); });
   $('stripNum').addEventListener('input', (ev) => { const v = parseFloat(ev.target.value); if (v > 0) { state.parkStrip = v; pushParams(); } });
+  $('patRange').addEventListener('input', (ev) => { state.patience = +ev.target.value; $('patOut').textContent = state.patience ? state.patience + ' s' : 'off'; pushParams(); });
   $('jamRange').addEventListener('input', (ev) => { state.jam = ev.target.value / 100; $('jamOut').textContent = ev.target.value + ' %'; pushParams(); });
   $('speedSel').addEventListener('change', (ev) => { state.simSpeed = parseFloat(ev.target.value); pushParams(); });
   $('pauseBtn').addEventListener('click', (ev) => { state.paused = !state.paused; ev.target.textContent = state.paused ? 'Resume' : 'Pause'; pushParams(); });
@@ -554,6 +555,7 @@ function updateStats() {
   $('sPlaced').textContent = unfit > 0 ? fmt(total) + ' of ' + fmt(req) + ' · ' + fmt(unfit) + ' do not fit' : fmt(total) + ' of ' + fmt(req);
   $('sPlaced').style.color = unfit > 0 ? '#f85149' : '';
   $('sBlocked').textContent = stats.mv ? (stats.blockedN / stats.mv * 100).toFixed(0) + ' % waiting' : '–';
+  $('sReloc').textContent = stats.relocN != null ? fmt(stats.relocN) : '–';
   const kmh = stats.mv ? stats.sumV / stats.mv * 3.6 : 0;
   const rel = stats.sumF ? stats.sumV / stats.sumF * 100 : 100;
   $('sSpeed').textContent = stats.mv ? kmh.toFixed(1) + ' km/h  (' + rel.toFixed(0) + ' % of free-flow)' : '–';

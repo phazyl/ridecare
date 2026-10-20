@@ -31,7 +31,7 @@ GM.createRunner = function createRunner(post) {
   const cap = MAX_VEHICLES;
 
   /* ------------------------------ parameters ------------------------------ */
-  const P = { areaKm2: 0.894, parkShare: 0, parkStrip: 2.3, jam: 0.5, slow: false };
+  const P = { areaKm2: 0.894, parkShare: 0, parkStrip: 2.3, jam: 0.5, slow: false, patience: 5 };
   const C = { on: true, perDay: 0, secPerDay: 20 };
   const S = { simSpeed: 10, paused: false, hidden: false };
   const want = new Int32Array(nT), placed = new Int32Array(nT);
@@ -55,8 +55,12 @@ GM.createRunner = function createRunner(post) {
   /* ------------------------------ vehicles -------------------------------- */
   let net = null, G = null;
   let nv = 0;
-  let ve, vs, vdir, vjit, vtype, vlat, vpref, vpark, vside, vpg, vx, vy, vhx, vhy, vparked, vnx, gnext;
+  let ve, vs, vdir, vjit, vtype, vlat, vpref, vpark, vside, vpg, vx, vy, vhx, vhy, vparked, vnx, gnext, vlane, vwait;
+  // vlane = sign of the lateral position (vlat) a moving vehicle keeps to, in the edge's forward frame.
+  // Two-way street: always equal to vdir (drive on the left). One-way street (vdir is always +1): either
+  // +1 (left half) or -1 (right half), so a one-way street is driven on over its full width.
   function allocate() {
+    vlane = new Int8Array(cap); vwait = new Float32Array(cap);
     ve = new Int32Array(cap); vs = new Float32Array(cap); vdir = new Int8Array(cap); vjit = new Float32Array(cap);
     vtype = new Uint8Array(cap); vlat = new Float32Array(cap); vpref = new Float32Array(cap); vpark = new Float32Array(cap); vside = new Int8Array(cap);
     vpg = new Uint16Array(cap); vx = new Float32Array(cap); vy = new Float32Array(cap);
@@ -65,7 +69,7 @@ GM.createRunner = function createRunner(post) {
   function copyVeh(d, s) {
     ve[d] = ve[s]; vs[d] = vs[s]; vdir[d] = vdir[s]; vjit[d] = vjit[s]; vtype[d] = vtype[s]; vlat[d] = vlat[s]; vpref[d] = vpref[s];
     vpark[d] = vpark[s]; vside[d] = vside[s]; vpg[d] = vpg[s]; vx[d] = vx[s]; vy[d] = vy[s];
-    vhx[d] = vhx[s]; vhy[d] = vhy[s]; vparked[d] = vparked[s]; vnx[d] = vnx[s];
+    vhx[d] = vhx[s]; vhy[d] = vhy[s]; vparked[d] = vparked[s]; vnx[d] = vnx[s]; vlane[d] = vlane[s]; vwait[d] = vwait[s];
   }
 
   /* ----------------------------- spatial hash ----------------------------- */
@@ -111,8 +115,11 @@ GM.createRunner = function createRunner(post) {
   function poseMoving(e, s, dir, lat, t) {
     poseAt(e, s, dir, lat * Math.max(0, net.ewS[e] * 0.5 - VW[t] * 0.5 - PHYS.gap));
   }
+  // Parked vehicles face the direction of travel: on a two-way street that is "away from the junction on its
+  // own side" (heading = side); on a one-way street everybody faces forward, on either kerb.
+  const parkHeading = (e, side) => (net.ow[e] ? 1 : side);
   function poseParked(e, s, side) {
-    poseAt(e, s, side, side * Math.max(0, net.ewS[e] * 0.5 - P.parkStrip * 0.5));
+    poseAt(e, s, parkHeading(e, side), side * Math.max(0, net.ewS[e] * 0.5 - P.parkStrip * 0.5));
   }
 
   function rectsOverlap(ax, ay, ahx, ahy, aL, aW, bx, by, bhx, bhy, bL, bW) {
@@ -173,11 +180,17 @@ GM.createRunner = function createRunner(post) {
     for (let k = 0; k < PHYS.tries; k++) {
       const e = sampleEdge(), zb = stopDist(e), s = zb + Math.random() * (net.len[e] - 2 * zb);   // never inside a junction box
       const parked = wantPark && k < PHYS.tries * 0.7;
-      let dir, lat = 0, side = 0;
-      if (parked) { side = Math.random() < 0.5 ? 1 : -1; dir = side; poseParked(e, s, side); }
-      else { dir = Math.random() < 0.5 ? 1 : -1; lat = dir * (0.05 + Math.random() * 0.90); poseMoving(e, s, dir, lat, t); }
+      let dir, lat = 0, side = 0, lane = 1;
+      const oneWay = net.ow[e] === 1;
+      if (parked) { side = Math.random() < 0.5 ? 1 : -1; dir = parkHeading(e, side); poseParked(e, s, side); }
+      else {
+        dir = oneWay ? 1 : (Math.random() < 0.5 ? 1 : -1);               // one-way: only the legal direction
+        lane = oneWay ? (Math.random() < 0.5 ? 1 : -1) : dir;           // one-way: either half; two-way: keep left
+        lat = lane * (0.05 + Math.random() * 0.90); poseMoving(e, s, dir, lat, t);
+      }
       if (overlapsAny(PX, PY, PHX, PHY, t, -1)) continue;
       const i = nv;
+      vlane[i] = lane; vwait[i] = 0;
       ve[i] = e; vs[i] = s; vdir[i] = dir; vlat[i] = lat; vpref[i] = Math.abs(lat) || 0.55; vside[i] = side; vtype[i] = t;
       vjit[i] = 0.8 + 0.4 * Math.random(); vpark[i] = pv; vpg[i] = pgen; vparked[i] = parked ? 1 : 0;
       vx[i] = PX; vy[i] = PY; vhx[i] = PHX; vhy[i] = PHY; vnx[i] = pickNext(dir === 1 ? net.v[e] : net.u[e], e);
@@ -237,23 +250,24 @@ GM.createRunner = function createRunner(post) {
     for (let a = 0; a < 2; a++) {
       const side = a ? -first : first;
       poseParked(e, s, side);
-      if (!overlapsAny(PX, PY, PHX, PHY, t, i)) { commitPose(i, e, s, side, 0); vside[i] = side; vparked[i] = 1; vpg[i] = pgen; return true; }
+      if (!overlapsAny(PX, PY, PHX, PHY, t, i)) { commitPose(i, e, s, parkHeading(e, side), 0); vside[i] = side; vparked[i] = 1; vpg[i] = pgen; return true; }
     }
     return false;
   }
   function toMoving(i) {
     const e = ve[i], s = vs[i], t = vtype[i], dir = vdir[i];
+    const lane = net.ow[e] ? (Math.random() < 0.5 ? 1 : -1) : dir;     // one-way: either half; two-way: keep left
     for (let a = 0; a < FREE_LATS.length; a++) {
-      const lat = dir * FREE_LATS[a];
+      const lat = lane * FREE_LATS[a];
       poseMoving(e, s, dir, lat, t);
-      if (!overlapsAny(PX, PY, PHX, PHY, t, i)) { commitPose(i, e, s, dir, lat); vpref[i] = FREE_LATS[a]; vside[i] = 0; vparked[i] = 0; vnx[i] = pickNext(dir === 1 ? net.v[e] : net.u[e], e); return true; }
+      if (!overlapsAny(PX, PY, PHX, PHY, t, i)) { commitPose(i, e, s, dir, lat); vlane[i] = lane; vpref[i] = FREE_LATS[a]; vside[i] = 0; vparked[i] = 0; vnx[i] = pickNext(dir === 1 ? net.v[e] : net.u[e], e); return true; }
     }
     return false;
   }
   function reposePark(i) {
     vpg[i] = pgen;
     poseParked(ve[i], vs[i], vside[i]);
-    if (!overlapsAny(PX, PY, PHX, PHY, vtype[i], i)) { commitPose(i, ve[i], vs[i], vside[i], 0); return true; }
+    if (!overlapsAny(PX, PY, PHX, PHY, vtype[i], i)) { commitPose(i, ve[i], vs[i], vdir[i], 0); return true; }   // vdir = parked heading
     return false;
   }
   // A vehicle is parked iff its fixed random draw < parkShare. Transitions are attempted a slice at a time;
@@ -274,14 +288,17 @@ GM.createRunner = function createRunner(post) {
   }
 
   /* -------------------------------- movement -------------------------------- */
+  // Next street at a junction, chosen among the streets that may be entered there (net.adjE only lists a
+  // one-way street at its start). Dead end: a two-way street turns around; a one-way street has no legal
+  // way on and gives -1 (the vehicle waits at the stop line; the exporter prunes such streets).
   function pickNext(node, from) {
     const a = net.adjOff[node], b = net.adjOff[node + 1], adj = net.adjE;
     let cnt = 0;
     for (let k = a; k < b; k++) if (adj[k] !== from) cnt++;
-    if (cnt === 0) return from;
+    if (cnt === 0) return net.ow[from] ? -1 : from;
     let r = Math.floor(Math.random() * cnt);
     for (let k = a; k < b; k++) if (adj[k] !== from && r-- === 0) return adj[k];
-    return from;
+    return net.ow[from] ? -1 : from;
   }
 
   // Junctions. A vehicle never stands inside a junction box: it stops at a stop line ZB metres before the node
@@ -303,22 +320,24 @@ GM.createRunner = function createRunner(post) {
       const node = dir === 1 ? net.v[e] : net.u[e];
       for (let k = 0; k < 4; k++) {
         const nx = k === 0 ? vnx[i] : pickNext(node, e);          // if the planned street is full, try others
-        if (k > 0 && nx === vnx[i]) continue;
-        const nd = nx === e ? -dir : (net.u[nx] === node ? 1 : -1);
+        if (nx < 0 || (k > 0 && nx === vnx[i])) continue;         // nx < 0: no legal way on from a one-way street
+        const nd = nx === e ? -dir : (net.u[nx] === node ? 1 : -1);   // one-way streets are only ever entered at u, so nd = 1
         const zn = stopDist(nx), Ln = net.len[nx];
         let sd = nd === 1 ? zn + over : Ln - zn - over;
         if (sd < zn) sd = zn; else if (sd > Ln - zn) sd = Ln - zn;
-        const lat = nd * Math.abs(nlat);
+        const lane = net.ow[nx] ? (Math.random() < 0.5 ? 1 : -1) : nd;   // one-way: pick a half; two-way: keep left
+        const lat = lane * Math.abs(nlat);
         poseMoving(nx, sd, nd, lat, t);
         if (overlapsAny(PX, PY, PHX, PHY, t, i)) continue;
         commitPose(i, nx, sd, nd, lat);
+        vlane[i] = lane;
         vnx[i] = pickNext(nd === 1 ? net.v[nx] : net.u[nx], nx);
         return true;
       }
       s = dir === 1 ? hi : lo;                                      // cannot cross: roll up to the stop line
       if (Math.abs(s - vs[i]) < 0.02) return false;
     }
-    nlat = dir * Math.abs(nlat);          // keep to the left of the travel direction
+    nlat = vlane[i] * Math.abs(nlat);     // keep to the left of the travel direction (one-way streets: to the chosen half)
     poseMoving(e, s, dir, nlat, t);
     if (overlapsAny(PX, PY, PHX, PHY, t, i)) return false;
     commitPose(i, e, s, dir, nlat);
@@ -328,17 +347,40 @@ GM.createRunner = function createRunner(post) {
   // Returns the distance actually travelled (0 = waiting).
   // Tries full speed, then closing up to the vehicle ahead in smaller steps, then a sideways yield.
   function advance(i, d) {
-    const dir = vdir[i], lat0 = vlat[i];
-    let dl = dir * vpref[i] - lat0; dl = dl > 0.2 ? 0.2 : dl < -0.2 ? -0.2 : dl;     // drift back toward own lane
+    const dir = vdir[i], lat0 = vlat[i], lane = vlane[i];
+    let dl = lane * vpref[i] - lat0; dl = dl > 0.2 ? 0.2 : dl < -0.2 ? -0.2 : dl;     // drift back toward own lane
     const nl = lat0 + dl;
     if (tryMove(i, d, nl)) return d;
     if (tryMove(i, d * 0.45, nl)) return d * 0.45;
     if (tryMove(i, d * 0.15, nl)) return d * 0.15;
-    let da = dir * (Math.random() < 0.5 ? 0.95 : 0.15) - lat0; da = da > 0.2 ? 0.2 : da < -0.2 ? -0.2 : da;   // yield sideways, own half only
+    let da = lane * (Math.random() < 0.5 ? 0.95 : 0.15) - lat0; da = da > 0.2 ? 0.2 : da < -0.2 ? -0.2 : da;   // yield sideways, own half only
     if (tryMove(i, d * 0.5, lat0 + da)) return d * 0.5;
     // still waiting at a stop line: reconsider which street to take next
     if (Math.random() < 0.3) vnx[i] = pickNext(dir === 1 ? net.v[ve[i]] : net.u[ve[i]], ve[i]);
     return 0;
+  }
+
+  // Gridlock breaker (SUMO's "teleport after timeout"): a vehicle that has not moved for P.patience simulated
+  // seconds is lifted out and set down in a free spot elsewhere. A vehicle stuck right at its stop line goes
+  // first (it is the head of the jam); one stuck mid-street waits three times as long. Fleet size and the
+  // no-overlap rule are untouched, and every relocation is counted so jams are never hidden.
+  let relocN = 0;
+  function relocate(i) {
+    const t = vtype[i];
+    for (let k = 0; k < PHYS.tries; k++) {
+      const e = sampleEdge(), zb = stopDist(e), s = zb + Math.random() * (net.len[e] - 2 * zb);
+      const dir = net.ow[e] ? 1 : (Math.random() < 0.5 ? 1 : -1);
+      const lane = net.ow[e] ? (Math.random() < 0.5 ? 1 : -1) : dir;
+      const lat = lane * (0.05 + Math.random() * 0.9);
+      poseMoving(e, s, dir, lat, t);
+      if (overlapsAny(PX, PY, PHX, PHY, t, i)) continue;
+      commitPose(i, e, s, dir, lat);
+      vlane[i] = lane; vpref[i] = Math.abs(lat) || 0.55; vwait[i] = 0;
+      vnx[i] = pickNext(dir === 1 ? net.v[e] : net.u[e], e);
+      return true;
+    }
+    vwait[i] = 0;          // no room anywhere right now: try again after another wait
+    return false;
   }
 
   const acc = { steps: 0, mv: 0, blocked: 0, sumV: 0, sumF: 0 };
@@ -351,7 +393,15 @@ GM.createRunner = function createRunner(post) {
       const t = vtype[i], free = TV[t] * vjit[i];
       mv++; sumF += free;
       const moved = advance(i, free * spd[ve[i]] * h);
-      if (moved > 0) sumV += moved / h; else blocked++;
+      if (moved > 0) { sumV += moved / h; vwait[i] = 0; }
+      else {
+        blocked++;
+        const w = vwait[i] += h, pat = P.patience;
+        if (pat > 0 && w > pat) {
+          const e = ve[i], zb = stopDist(e), atLine = Math.abs(vs[i] - (vdir[i] === 1 ? net.len[e] - zb : zb)) < 0.6;
+          if (atLine || w > 3 * pat) { if (relocate(i)) relocN++; }
+        }
+      }
     }
     acc.steps++; acc.mv += mv; acc.blocked += blocked; acc.sumV += sumV; acc.sumF += sumF;
   }
@@ -435,7 +485,7 @@ GM.createRunner = function createRunner(post) {
     const moving = nv - parkedN;
     const stats = {
       mv: S.paused || !last.mv ? moving : Math.round(last.mv), parkedN, parkedFP,
-      blockedN: Math.min(last.blocked, moving), sumV: last.sumV, sumF: last.sumF, congArea, placedN: nv,
+      blockedN: Math.min(last.blocked, moving), sumV: last.sumV, sumF: last.sumF, congArea, placedN: nv, relocN,
     };
     const m = markers; markers = [];
     outstanding++;
@@ -502,7 +552,7 @@ GM.createRunner = function createRunner(post) {
     net.occ = new Float32Array(net.E); net.spdF = new Float32Array(net.E).fill(1);
     setDims(m.dims);
     allocate(); buildGrid(net.bounds);
-    nv = 0; placed.fill(0);
+    nv = 0; placed.fill(0); relocN = 0;
     applyCounts(m.counts);
     if (!started) { started = true; lastT = 0; timer = setTimeout(loop, 0); }
   }
@@ -514,7 +564,7 @@ GM.createRunner = function createRunner(post) {
         case 'params': applyParams(m.p); break;
         case 'counts': pendCounts = m.counts; break;                // latest wins; applied at the next loop iteration
         case 'dims': setDims(m.dims); updateRmax(); layoutAt = nowMs(); dirty = true; break;
-        case 'resetRun': run.events = 0; run.days = 0; markers = []; dirty = true; break;
+        case 'resetRun': relocN = 0; run.events = 0; run.days = 0; markers = []; dirty = true; break;
         case 'recycle': outstanding = Math.max(0, outstanding - 1); if (m.buf && pool.length < 4) pool.push(m.buf); break;
       }
     } catch (err) {

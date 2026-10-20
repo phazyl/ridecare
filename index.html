@@ -87,6 +87,7 @@
     <div class="stat"><span>Vehicles (moving / parked)</span><b id="sVeh">–</b></div>
     <div class="stat"><span>Placement (fits / requested)</span><b id="sPlaced">–</b></div>
     <div class="stat"><span>Traffic state</span><b id="sBlocked">–</b></div>
+    <div class="stat"><span>Jam relocations (total)</span><b id="sReloc">–</b></div>
     <div class="stat"><span>Mean speed</span><b id="sSpeed">–</b></div>
     <div class="stat"><span>Simulation rate</span><b id="sRate">–</b></div>
     <div class="stat"><span>Road area at ≥80 % of jam</span><b id="sCong">–</b></div>
@@ -117,6 +118,8 @@
     <div class="line"><label for="parkRange">Share of vehicles parked</label><output id="parkOut">0 %</output></div>
     <input type="range" id="parkRange" min="0" max="100" step="1" value="0">
     <div class="line"><label for="stripNum">Kerbside parking strip (m per side)</label><input type="number" id="stripNum" min="0.5" max="4" step="0.1" value="2.3" style="width:70px"></div>
+    <div class="line"><label for="patRange">Gridlock breaker: relocate after waiting</label><output id="patOut">5 s</output></div>
+    <input type="range" id="patRange" min="0" max="60" step="1" value="5">
     <div class="line"><label for="jamRange">Packing limit (coverage at jam)</label><output id="jamOut">50 %</output></div>
     <input type="range" id="jamRange" min="20" max="90" step="1" value="50">
     <div class="line"><label for="speedSel">Simulation speed</label>
