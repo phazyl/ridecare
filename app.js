@@ -19,7 +19,7 @@ const { TYPES, MAX_VEHICLES } = GM;
  * 1. CONFIG
  * ===================================================================== */
 const AREA = { min: 0.80, max: 1.00, step: 0.001, osmnx: 0.894, report: 0.902 };
-const DEFAULTS = { parkShare: 0, parkStrip: 2.3, jam: 0.50, patience: 5, simSpeed: 10, dotPx: 2 };
+const DEFAULTS = { parkShare: 89, parkStrip: 2.3, jam: 0.50, patience: 5, simSpeed: 10, dotPx: 2 };
 const TODAY_TOTAL = 119093; // Table 3 = the 2024 baseline fleet
 const COL = { beta: 1.5, secPerDay: 20, share: 0.8, baseAcc: 2882, baseFleet: 119093 };
 
@@ -51,6 +51,7 @@ const counts = new Int32Array(nT);   // requested per type (what the sliders say
 const placed = new Int32Array(nT);   // reported by the worker: actually on the street, never overlapping
 const state = {
   areaKm2: AREA.osmnx, parkShare: DEFAULTS.parkShare / 100, parkStrip: DEFAULTS.parkStrip,
+  safe: false, react: 1.5, mu: 0.6,
   jam: DEFAULTS.jam, patience: DEFAULTS.patience, simSpeed: DEFAULTS.simSpeed, dotPx: DEFAULTS.dotPx,
   paused: false, heat: true, slow: false, synthetic: false,
   year: 2024, yearCustom: false, advBusy: false,
@@ -74,7 +75,7 @@ const FP = (t) => TYPES[t].L * TYPES[t].W;
 function paramsMsg() {
   const A = expectedPerYear(requestedTotal(), state.beta);
   return {
-    P: { areaKm2: state.areaKm2, parkShare: state.parkShare, parkShareT: clkParkArr(), parkStrip: state.parkStrip, jam: state.jam, slow: state.slow, patience: state.patience },
+    P: { areaKm2: state.areaKm2, parkShare: state.parkShare, parkShareT: clkParkArr(), parkStrip: state.parkStrip, jam: state.jam, slow: state.slow, patience: state.patience, safe: state.safe, react: state.react, mu: state.mu },
     C: { on: state.colOn, perDay: A / 365 * clkExposure(), secPerDay: clkSecPerDay() },
     simSpeed: state.simSpeed, paused: state.paused || state.advBusy, hidden: typeof document !== 'undefined' && !!document.hidden,
   };
@@ -250,6 +251,9 @@ function draw() {
     }
     ctx.globalAlpha = 1;
   }
+
+  // ---- closed kerbs and the selected street ----------------------------------
+  if (NP.pk) drawNp(sc, cx, cy, hw, hh);
 
   // ---- collision flashes -----------------------------------------------
   const tNow = now();
@@ -457,6 +461,145 @@ function clkBind() {
   if (typeof ResizeObserver === 'function') new ResizeObserver(clkDraw).observe(cv);
 }
 
+
+/* =====================================================================
+ * 6c. NO-PARKING STREETS
+ *   NP.pk[e]: bit 1 = left kerb closed, bit 2 = right kerb closed ("left" = left of the street's drawing direction u -> v).
+ *   Default: Boduthakurufaanu Magu (OSM also uses this name for the Malé-Hulhumalé bridge) and the bridge itself are closed on both kerbs.
+ *   The rules are kept in this browser (localStorage) and are tied to the network file they were made for.
+ * ===================================================================== */
+const NP = { names: ['Boduthakurufaanu Magu', 'Sinamalé Bridge'], pk: null, list: [], sel: null, all: false, key: 'gm_nopark_v1' };
+const npName = (e) => (net.nm[e] >= 0 ? net.names[net.nm[e]] : null);
+function npDefault() {
+  const pk = new Uint8Array(net.E), ids = NP.names.map((n) => net.names.indexOf(n)).filter((i) => i >= 0), ends = [];
+  const endPts = (e) => { const o = net.off[e], q = net.off[e + 1] - 1; return [[net.px[o], net.py[o]], [net.px[q], net.py[q]]]; };
+  for (let e = 0; e < net.E; e++) if (ids.includes(net.nm[e])) { pk[e] = 3; if (net.len[e] > 1000) ends.push(...endPts(e)); }
+  // the bridge's other carriageway: long segments whose two ends lie within 150 m of those bridge ends
+  const near = (p) => ends.some((q) => Math.hypot(p[0] - q[0], p[1] - q[1]) < 150);
+  for (let e = 0; e < net.E; e++) if (!pk[e] && net.len[e] > 1000 && endPts(e).every(near)) pk[e] = 3;
+  return pk;
+}
+function npLoad() {
+  try {
+    const o = JSON.parse(localStorage.getItem(NP.key) || 'null'), gen = rawNetwork && rawNetwork.meta && rawNetwork.meta.generated;
+    if (o && o.n === net.E && o.gen === gen && Array.isArray(o.b)) { const pk = new Uint8Array(net.E); for (const [e, m] of o.b) if (e >= 0 && e < net.E) pk[e] = m & 3; return pk; }
+  } catch (err) { /* storage unavailable: use the default */ }
+  return npDefault();
+}
+function npSave() {
+  try {
+    const b = []; for (let e = 0; e < net.E; e++) if (NP.pk[e]) b.push([e, NP.pk[e]]);
+    localStorage.setItem(NP.key, JSON.stringify({ gen: rawNetwork && rawNetwork.meta && rawNetwork.meta.generated, n: net.E, b }));
+  } catch (err) { /* ignore */ }
+}
+const pushNp = () => { if (sim && NP.pk) sim.post({ cmd: 'noPark', mask: Array.from(NP.pk) }); };
+function npRefresh(push) {
+  NP.list = []; let closed = 0, all = 0;
+  for (let e = 0; e < net.E; e++) {
+    all += 2 * net.len[e];
+    const m = NP.pk[e]; if (!m) continue;
+    NP.list.push(e); closed += net.len[e] * ((m & 1) + ((m >> 1) & 1));
+  }
+  $('npSummary').textContent = NP.list.length
+    ? NP.list.length + ' street segments restricted · ' + (closed / 1000).toFixed(1) + ' km of kerb closed (' + (100 * closed / all).toFixed(1) + ' % of all kerb)'
+    : 'Parking is allowed on every street.';
+  npUpdateSel(); needDraw = true;
+  if (push) { npSave(); pushNp(); }
+}
+function npSelEdges() {
+  if (NP.sel == null) return [];
+  const n = net.nm[NP.sel];
+  if (!NP.all || n < 0) return [NP.sel];
+  const out = []; for (let e = 0; e < net.E; e++) if (net.nm[e] === n) out.push(e);
+  return out;
+}
+function npUpdateSel() {
+  const box = $('npSel');
+  if (NP.sel == null) { box.hidden = true; return; }
+  box.hidden = false;
+  const e = NP.sel, nm = npName(e), edges = npSelEdges(); let len = 0; for (const k of edges) len += net.len[k];
+  $('npSelName').textContent = nm || 'Unnamed street';
+  $('npSelInfo').textContent = edges.length + ' segment' + (edges.length === 1 ? '' : 's') + ' · ' + Math.round(len) + ' m · ' + net.ewS[e].toFixed(1) + ' m wide' + (net.ow[e] ? ' · one-way' : ' · two-way');
+  $('npL').checked = !(NP.pk[e] & 1); $('npR').checked = !(NP.pk[e] & 2);
+  let same = 0; if (nm) for (let k = 0; k < net.E; k++) if (net.nm[k] === net.nm[e]) same++;
+  $('npAll').checked = NP.all && same > 0; $('npAll').disabled = !nm || same < 2;
+  $('npAllTxt').textContent = nm && same > 1 ? 'Apply to all ' + same + ' segments named “' + nm + '”' : 'Only this segment (no other segment has this name)';
+}
+function npSetSide(bit, allowed) {
+  for (const e of npSelEdges()) NP.pk[e] = allowed ? NP.pk[e] & ~bit : NP.pk[e] | bit;
+  npRefresh(true);
+}
+function npHit(mx, my) {
+  const wx = (mx - view.w / 2) / cam.scale + cam.x, wy = cam.y - (my - view.h / 2) / cam.scale, tol = 10 / cam.scale;
+  let best = -1, bd = Infinity;
+  for (let e = 0; e < net.E; e++) {
+    const m = tol + net.ewS[e] / 2;
+    if (wx < net.bx0[e] - m || wx > net.bx1[e] + m || wy < net.by0[e] - m || wy > net.by1[e] + m) continue;
+    let d = Infinity;
+    for (let k = net.off[e]; k < net.off[e + 1] - 1; k++) {
+      const x0 = net.px[k], y0 = net.py[k], dx = net.px[k + 1] - x0, dy = net.py[k + 1] - y0, l2 = dx * dx + dy * dy;
+      const t = l2 > 0 ? Math.max(0, Math.min(1, ((wx - x0) * dx + (wy - y0) * dy) / l2)) : 0;
+      d = Math.min(d, Math.hypot(wx - x0 - t * dx, wy - y0 - t * dy));
+    }
+    d = Math.max(0, d - net.ewS[e] / 2);
+    if (d <= tol && d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
+function drawNp(sc, cx, cy, hw, hh) {
+  const P = (k) => [(net.px[k] - cx) * sc + hw, hh - (net.py[k] - cy) * sc];
+  const edge = (e, side, col, lw, dash) => {          // side: +1 left kerb, -1 right kerb, 0 = the street itself
+    ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.setLineDash(dash); ctx.beginPath();
+    const off = Math.max(1.5, net.ewS[e] * sc / 2) * side;
+    for (let k = net.off[e]; k < net.off[e + 1] - 1; k++) {
+      const [x0, y0] = P(k), [x1, y1] = P(k + 1), dx = x1 - x0, dy = y1 - y0, l = Math.hypot(dx, dy) || 1;
+      const ox = dy / l * off, oy = -dx / l * off;
+      ctx.moveTo(x0 + ox, y0 + oy); ctx.lineTo(x1 + ox, y1 + oy);
+    }
+    ctx.stroke();
+  };
+  const wx0 = cx - hw / sc - 40, wx1 = cx + hw / sc + 40, wy0 = cy - hh / sc - 40, wy1 = cy + hh / sc + 40;
+  const vis = (e) => !(net.bx1[e] < wx0 || net.bx0[e] > wx1 || net.by1[e] < wy0 || net.by0[e] > wy1);
+  ctx.lineCap = 'butt';
+  for (const e of NP.list) {
+    if (!vis(e)) continue;
+    if (NP.pk[e] & 1) edge(e, 1, '#ff5d5d', 2, [4, 3]);
+    if (NP.pk[e] & 2) edge(e, -1, '#ff5d5d', 2, [4, 3]);
+  }
+  for (const e of npSelEdges()) {
+    if (!vis(e)) continue;
+    ctx.globalAlpha = 0.3; edge(e, 0, '#ffffff', Math.max(3, net.ewS[e] * sc + 4), []); ctx.globalAlpha = 1;
+    edge(e, 1, '#ffa62b', 2.5, []); edge(e, -1, '#3fe0ff', 2.5, []);
+  }
+  ctx.setLineDash([]);
+}
+function npBind() {
+  const dl = $('npNames'); net.names.forEach((n) => { const o = document.createElement('option'); o.value = n; dl.appendChild(o); });
+  $('npL').addEventListener('change', (ev) => npSetSide(1, ev.target.checked));
+  $('npR').addEventListener('change', (ev) => npSetSide(2, ev.target.checked));
+  $('npAll').addEventListener('change', (ev) => { NP.all = ev.target.checked; npUpdateSel(); needDraw = true; });
+  $('npSelX').addEventListener('click', () => { NP.sel = null; npUpdateSel(); needDraw = true; });
+  $('npReset').addEventListener('click', () => { NP.pk = npDefault(); npRefresh(true); });
+  $('npClear').addEventListener('click', () => { NP.pk = new Uint8Array(net.E); npRefresh(true); });
+  $('npSearch').addEventListener('change', (ev) => {
+    const q = ev.target.value.trim().toLowerCase(); if (!q) return;
+    const i = net.names.findIndex((n) => n.toLowerCase() === q); if (i < 0) return;
+    let e0 = -1; for (let e = 0; e < net.E; e++) if (net.nm[e] === i) { e0 = e; break; }
+    if (e0 < 0) return;
+    NP.sel = e0; NP.all = true;
+    const o = net.off[e0], q2 = (o + net.off[e0 + 1] - 1) >> 1; cam.x = net.px[q2]; cam.y = net.py[q2];
+    npUpdateSel(); needDraw = true;
+  });
+  let down = null;                                           // click (not drag) on the map selects the nearest street
+  cv.addEventListener('pointerdown', (ev) => { down = { x: ev.clientX, y: ev.clientY, n: 1 }; });
+  cv.addEventListener('pointerup', (ev) => {
+    if (!down || Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > 5) { down = null; return; }
+    down = null;
+    const r = cv.getBoundingClientRect(), e = npHit(ev.clientX - r.left, ev.clientY - r.top);
+    NP.sel = e >= 0 ? e : null; NP.all = false; npUpdateSel(); needDraw = true;
+  });
+}
+
 /* =====================================================================
  * 7. COLLISION ESTIMATE  (statistical, see header)
  * ===================================================================== */
@@ -650,6 +793,9 @@ function bindUI() {
   $('parkRange').addEventListener('input', (ev) => { state.parkShare = ev.target.value / 100; $('parkOut').textContent = ev.target.value + ' %'; pushParams(); });
   $('stripNum').addEventListener('input', (ev) => { const v = parseFloat(ev.target.value); if (v > 0) { state.parkStrip = v; pushParams(); } });
   $('patRange').addEventListener('input', (ev) => { state.patience = +ev.target.value; $('patOut').textContent = state.patience ? state.patience + ' s' : 'off'; pushParams(); });
+  $('safeChk').addEventListener('change', (ev) => { state.safe = ev.target.checked; $('safeBox').hidden = !state.safe; safeInfo(); pushParams(); });
+  $('reactNum').addEventListener('input', (ev) => { const v = parseFloat(ev.target.value); if (v >= 0 && v <= 4) { state.react = v; safeInfo(); pushParams(); } });
+  $('muSel').addEventListener('change', (ev) => { state.mu = parseFloat(ev.target.value); safeInfo(); pushParams(); });
   $('jamRange').addEventListener('input', (ev) => { state.jam = ev.target.value / 100; $('jamOut').textContent = ev.target.value + ' %'; pushParams(); });
   $('speedSel').addEventListener('change', (ev) => { state.simSpeed = parseFloat(ev.target.value); pushParams(); });
   $('pauseBtn').addEventListener('click', (ev) => { state.paused = !state.paused; ev.target.textContent = state.paused ? 'Resume' : 'Pause'; pushParams(); });
@@ -696,16 +842,28 @@ function bindUI() {
   });
 }
 
+const safeGap = (v) => v * state.react + v * v / (2 * state.mu * 9.81);   // metres: reaction distance + braking distance
+function safeInfo() {
+  const row = (id) => { const t = TYPES.find((x) => x.id === id), g = safeGap(t.v); return `${t.name.toLowerCase()} ${Math.round(t.v * 3.6)} km/h → ${g.toFixed(1)} m (braking ${(t.v * t.v / (2 * state.mu * 9.81)).toFixed(1)} m)`; };
+  $('safeInfo').innerHTML = 'Gap added in front of each moving vehicle at its free-flow speed: ' + ['moto', 'car', 'lorry'].map(row).join('; ') +
+    '. Braking distance grows with the square of speed. Parked vehicles get no gap. With "Reduce vehicle speeds…" on, the gap shrinks as streets slow down.';
+}
 function updateStats() {
   const areaM2 = state.areaKm2 * 1e6;
   let foot = 0;
   for (let t = 0; t < nT; t++) foot += placed[t] * FP(t);     // only vehicles that fit are on the street
   const total = placedTotal(), req = requestedTotal();
+  const useSafe = state.safe && stats.effFP != null;
+  if (useSafe) foot = stats.effFP;                    // footprints + reaction/braking gap of moving vehicles
   const pct = foot / areaM2;
   const jam = state.jam;
   $('sArea').textContent = state.areaKm2.toFixed(3) + ' km²';
   $('sFoot').textContent = (foot / 1e6).toFixed(3) + ' km²  (' + fmt(foot) + ' m²)';
   $('sPct').textContent = (pct * 100).toFixed(1) + ' %';
+  $('lFoot').textContent = useSafe ? 'Footprint + safe spacing (all)' : 'Vehicle footprint (all)';
+  $('lPct').textContent = useSafe ? 'Coverage incl. safe spacing' : 'Coverage of road area';
+  $('rowGap').hidden = !useSafe;
+  if (useSafe) $('sGap').textContent = (stats.gapFP / areaM2 * 100).toFixed(1) + ' %  (' + fmt(stats.gapFP) + ' m²)';
   $('sParkFoot').textContent = (stats.parkedFP / areaM2 * 100).toFixed(1) + ' %';
   $('sVeh').textContent = fmt(total) + '  (' + fmt(stats.mv) + ' / ' + fmt(stats.parkedN) + ')';
   const unfit = req - total;
@@ -726,7 +884,7 @@ function updateStats() {
   const ratio = pct / jam;
   fill.style.background = ratio < 0.6 ? '#3fb950' : ratio < 1 ? '#e3a008' : '#f85149';
   $('barMark').style.left = (jam * 100) + '%';
-  $('barMarkLbl').textContent = 'packing limit ' + Math.round(jam * 100) + ' %';
+  $('barMarkLbl').textContent = 'packing limit ' + Math.round(jam * 100) + ' %' + (useSafe ? ' · incl. safe spacing' : '');
   if (yearsCfg) $('yearFleet').textContent = fmt(req) + ' vehicles';
   if (CLK.curves && !CLK.play) clkUI();
   updateCollisionPanel();
@@ -849,7 +1007,7 @@ function advPump() {
     };
     w.onerror = () => advFail('a test worker failed to start');
     const P = Object.assign(paramsMsg().P, d.P);
-    w.postMessage({ cmd: 'scenario', id: d.id, raw: rawNetwork, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: { P }, counts: d.counts, warm: 25, meas: 15 });
+    w.postMessage({ cmd: 'scenario', id: d.id, raw: rawNetwork, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: { P }, counts: d.counts, warm: 25, meas: 15, noPark: Array.from(NP.pk) });
   }
 }
 function advProgress() {
@@ -943,7 +1101,7 @@ function bindFull() {
 }
 
 async function init() {
-  buildTypeRows(); buildDims(); bindUI(); bindAdvisor(); bindFull();
+  buildTypeRows(); buildDims(); bindUI(); bindAdvisor(); bindFull(); safeInfo();
   resize();
   if (typeof ResizeObserver === 'function') new ResizeObserver(() => { resize(); }).observe(cv.parentElement);
   const [rawNet, years] = await Promise.all([loadJson('data/network.json'), loadJson('data/years.json')]);
@@ -958,6 +1116,7 @@ async function init() {
   }
   net = GM.prepareNetwork(raw);
   GM.applyRoadArea(net, state.areaKm2);
+  NP.pk = npLoad(); npBind(); npRefresh(false);
 
   yearsCfg = years;
   if (yearsCfg) {
@@ -976,7 +1135,7 @@ async function init() {
   syncTypeInputs();
   fitView();
   updateYearUI(); clkUI();
-  bootBackend({ cmd: 'init', raw, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: paramsMsg(), counts: Array.from(counts) });
+  bootBackend({ cmd: 'init', raw, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: paramsMsg(), counts: Array.from(counts), noPark: Array.from(NP.pk) });
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(raf);
 }
 

@@ -133,8 +133,9 @@
     <div id="barWrap"><div id="barFill"></div><div id="barMark" title="Packing limit"></div></div>
     <div id="barLbl"><span>0 %</span><span id="barMarkLbl">packing limit</span><span>100 %</span></div>
     <div class="stat"><span>Road area</span><b id="sArea">–</b></div>
-    <div class="stat"><span>Vehicle footprint (all)</span><b id="sFoot">–</b></div>
-    <div class="stat"><span>Coverage of road area</span><b id="sPct">–</b></div>
+    <div class="stat"><span id="lFoot">Vehicle footprint (all)</span><b id="sFoot">–</b></div>
+    <div class="stat"><span id="lPct">Coverage of road area</span><b id="sPct">–</b></div>
+    <div class="stat" id="rowGap" hidden><span>…of which braking gap (moving)</span><b id="sGap">–</b></div>
     <div class="stat"><span>…of which parked</span><b id="sParkFoot">–</b></div>
     <div class="stat"><span>Vehicles (moving / parked)</span><b id="sVeh">–</b></div>
     <div class="stat"><span>Placement (fits / requested)</span><b id="sPlaced">–</b></div>
@@ -200,13 +201,31 @@
     </section>
     <section class="sec">
 <h3>Parking &amp; movement</h3>
-    <div class="line"><label for="parkRange" id="parkLbl">Share of vehicles parked</label><output id="parkOut">0 %</output></div>
-    <input type="range" id="parkRange" min="0" max="100" step="1" value="0">
+    <div class="line"><label for="parkRange" id="parkLbl">Share of vehicles parked</label><output id="parkOut">89 %</output></div>
+    <input type="range" id="parkRange" min="0" max="100" step="1" value="89">
     <div class="line"><label for="stripNum">Kerbside parking strip (m per side)</label><input type="number" id="stripNum" min="0.5" max="4" step="0.1" value="2.3" style="width:70px"></div>
+    <div class="line" style="margin-top:10px"><label><b>No-parking streets</b></label><button id="npReset" title="Boduthakurufaanu Magu ring road and the Malé–Hulhumalé bridge">Default</button><button id="npClear">Allow all</button></div>
+    <div class="note" id="npSummary"></div>
+    <input type="search" id="npSearch" list="npNames" placeholder="Find a street by name…" style="width:100%">
+    <datalist id="npNames"></datalist>
+    <div class="note">Or click a street on the map. Red dashes on the map show closed kerbs. Parked vehicles only stand on the kerbs that stay open.</div>
+    <div id="npSel" hidden>
+      <div class="line" style="margin-bottom:0"><b id="npSelName"></b><button id="npSelX" title="Deselect">✕</button></div>
+      <div class="note" id="npSelInfo" style="margin-top:2px"></div>
+      <label class="chk"><input type="checkbox" id="npL" checked> <span style="color:#ffa62b">Left kerb</span>: parking allowed</label>
+      <label class="chk"><input type="checkbox" id="npR" checked> <span style="color:#3fe0ff">Right kerb</span>: parking allowed</label>
+      <label class="chk"><input type="checkbox" id="npAll"> <span id="npAllTxt">Apply to every segment with this name</span></label>
+    </div>
     <div class="line"><label for="patRange">Gridlock breaker: relocate after waiting</label><output id="patOut">5 s</output></div>
     <input type="range" id="patRange" min="0" max="60" step="1" value="5">
     <div class="line"><label for="jamRange">Packing limit (coverage at jam)</label><output id="jamOut">50 %</output></div>
     <input type="range" id="jamRange" min="20" max="90" step="1" value="50">
+    <label class="chk"><input type="checkbox" id="safeChk"> Safe-spacing capacity: moving vehicles also need reaction + braking distance</label>
+    <div id="safeBox" hidden>
+      <div class="line"><label for="reactNum">Driver reaction time (s)</label><input type="number" id="reactNum" min="0" max="4" step="0.1" value="1.5" style="width:70px"></div>
+      <div class="line"><label for="muSel">Road surface</label><select id="muSel"><option value="0.7">Dry, good tyres (μ 0.7)</option><option value="0.6" selected>Dry, typical (μ 0.6)</option><option value="0.4">Wet (μ 0.4)</option><option value="0.25">Very wet / sand (μ 0.25)</option></select></div>
+      <div class="note" id="safeInfo"></div>
+    </div>
     <div class="line"><label for="speedSel">Simulation speed</label>
       <select id="speedSel"><option>1</option><option>5</option><option selected>10</option><option>25</option><option>50</option></select><span>×</span>
       <button id="pauseBtn">Pause</button></div>

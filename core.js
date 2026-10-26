@@ -31,7 +31,7 @@ GM.createRunner = function createRunner(post) {
   const cap = MAX_VEHICLES;
 
   /* ------------------------------ parameters ------------------------------ */
-  const P = { areaKm2: 0.894, parkShare: 0, parkShareT: null, parkStrip: 2.3, jam: 0.5, slow: false, patience: 5 };
+  const P = { areaKm2: 0.894, parkShare: 0, parkShareT: null, parkStrip: 2.3, jam: 0.5, slow: false, patience: 5, safe: false, react: 1.5, mu: 0.6 };
   const C = { on: true, perDay: 0, secPerDay: 20 };
   const S = { simSpeed: 10, paused: false, hidden: false };
   const want = new Int32Array(nT), placed = new Int32Array(nT);
@@ -141,8 +141,15 @@ GM.createRunner = function createRunner(post) {
     const lat = Math.max(0, Math.min(ew * 0.5 - HW[t], Math.max(0, base + (row === 1 ? dd : row === 2 ? -dd : 0))));
     poseAt(e, s, parkHeading(e, side), side * lat);
   }
+  // No-parking kerbs: net.pk[e] bit 1 = left kerb closed, bit 2 = right kerb closed (left of the edge's forward direction).
+  const isBanned = (e, side) => (net.pk[e] & (side > 0 ? 1 : 2)) !== 0;
+  let banScan = false;
+  function setNoPark(mask) {
+    if (!net || !mask || mask.length !== net.E) return;
+    net.pk.set(mask); banScan = true; dirty = true;
+  }
   const ROWS1 = [0], ROWS2 = [1, 2];
-  const rowsFor = (t) => (P.parkStrip >= 4 * HW[t] ? ROWS2 : ROWS1);
+  const rowsFor = (t) => ROWS1;   // one row only: a single vehicle deep along each kerb (ROWS2 = old two-row motorcycle parking)
   let KE = 0, KS = 0, KSIDE = 1, KROW = 0;
   // Look for a free kerb spot for a vehicle of type t (self = its own index, or -1). First fit: from a random
   // point walk along the kerb in steps of one vehicle length. Sets KE/KS/KSIDE/KROW and the pose.
@@ -151,7 +158,8 @@ GM.createRunner = function createRunner(post) {
     for (let k = 0; k < PHYS.tries; k++) {
       const e = sampleEdge(), lo = stopDist(e), hi = net.len[e] - lo;
       if (hi - lo < step) continue;
-      const side = Math.random() < 0.5 ? 1 : -1;
+      let side = Math.random() < 0.5 ? 1 : -1;
+      if (isBanned(e, side)) { side = -side; if (isBanned(e, side)) continue; }
       let s = lo + Math.random() * (hi - lo);
       for (let j = 0; j < 4 && s <= hi; j++, s += step) {
         const r0 = (Math.random() * rows.length) | 0;
@@ -322,6 +330,7 @@ GM.createRunner = function createRunner(post) {
     const e = ve[i], sp = vs[i], t = vtype[i], first = Math.random() < 0.5 ? 1 : -1, rows = rowsFor(t);
     for (let a = 0; a < 2; a++) {
       const side = a ? -first : first;
+      if (isBanned(e, side)) continue;
       for (const row of rows) {
         poseParkedRow(e, sp, side, t, row);
         if (!overlapsAny(PX, PY, PHX, PHY, t, i)) { commitPose(i, e, sp, parkHeading(e, side), row); vside[i] = side; vparked[i] = 1; vpg[i] = pgen; vwait[i] = 0; return true; }
@@ -369,12 +378,14 @@ GM.createRunner = function createRunner(post) {
       if (surM[t] || surP[t]) anySur = true;
     }
     let changed = false;
-    const rm = [], steps = Math.min(nv, anySur ? 25000 : 6000);
+    const rm = [], steps = banScan ? nv : Math.min(nv, anySur ? 25000 : 6000);
+    banScan = false;
     for (let k = 0; k < steps; k++) {
       if (cursor >= nv) cursor = 0;
       const i = cursor++, t = vtype[i];
       if (vparked[i]) {
-        if (surP[t] > 0) { if (toMoving(i)) { surP[t]--; changed = true; } }
+        if (isBanned(ve[i], vside[i])) { if (toMoving(i)) changed = true; }      // parked on a kerb that is now closed: pull out
+        else if (surP[t] > 0) { if (toMoving(i)) { surP[t]--; changed = true; } }
         else if (vpg[i] !== pgen) { if (reposePark(i)) changed = true; }
       } else if (surM[t] > 0) {
         surM[t]--; changed = true;
@@ -517,14 +528,23 @@ GM.createRunner = function createRunner(post) {
   }
 
   /* ----------------------- coverage, speed factor, colours ------------------- */
-  let covStale = true, parkedN = 0, parkedFP = 0, congArea = 0;
+  let covStale = true, parkedN = 0, parkedFP = 0, congArea = 0, effFP = 0, gapFP = 0;
+  // Safe-spacing capacity: a MOVING vehicle also needs the road ahead of it for reaction + braking
+  //   gap = v*tReact + v^2/(2*mu*g),  v = free-flow speed of its type (x the street's slow-down factor if that option is on).
+  // Parked vehicles need no gap. Footprint used for coverage = width x (length + gap).
   function refreshCoverage() {
-    const occ = net.occ, E = net.E;
-    occ.fill(0); parkedN = 0; parkedFP = 0;
+    const occ = net.occ, E = net.E, safe = !!P.safe, spd = net.spdF;
+    const react = Math.max(0, +P.react || 0), mu = Math.max(0.05, +P.mu || 0.6);
+    occ.fill(0); parkedN = 0; parkedFP = 0; effFP = 0; gapFP = 0;
     for (let i = 0; i < nv; i++) {
-      const f = FP[vtype[i]];
-      occ[ve[i]] += f;
-      if (vparked[i]) { parkedN++; parkedFP += f; }
+      const t = vtype[i];
+      let f = FP[t];
+      if (vparked[i]) { parkedN++; parkedFP += f; effFP += f; occ[ve[i]] += f; continue; }
+      if (safe) {
+        const v = TV[t] * (spd[ve[i]] || 1), g = v * react + v * v / (2 * mu * 9.81);
+        const extra = VW[t] * g; f += extra; gapFP += extra;
+      }
+      effFP += f; occ[ve[i]] += f;
     }
     congArea = 0;
     const jam = Math.max(0.01, P.jam);
@@ -594,7 +614,7 @@ GM.createRunner = function createRunner(post) {
     }
     const moving = nv - parkedN;
     const stats = {
-      mv: S.paused || !last.mv ? moving : Math.round(last.mv), parkedN, parkedFP,
+      mv: S.paused || !last.mv ? moving : Math.round(last.mv), parkedN, parkedFP, effFP, gapFP,
       blockedN: Math.min(last.blocked, moving), sumV: last.sumV, sumF: last.sumF, congArea, placedN: nv, relocN, simT,
     };
     const m = markers; markers = [];
@@ -747,6 +767,7 @@ GM.createRunner = function createRunner(post) {
   function setupNet(m) {
     net = GM.prepareNetwork(m.raw);
     GM.applyRoadArea(net, P.areaKm2);
+    net.pk = new Uint8Array(net.E); if (m.noPark && m.noPark.length === net.E) net.pk.set(m.noPark);
     net.occ = new Float32Array(net.E); net.spdF = new Float32Array(net.E).fill(1);
     net.eb = new Float32Array(net.E); net.ep = new Float32Array(net.E);      // per-street waiting / presence (vehicle-seconds) for hotspot ranking
     setDims(m.dims);
@@ -766,6 +787,7 @@ GM.createRunner = function createRunner(post) {
       switch (m.cmd) {
         case 'init': init(m); break;
         case 'params': applyParams(m.p); break;
+        case 'noPark': setNoPark(m.mask); break;
         case 'counts': pendCounts = m.counts; break;                // latest wins; applied at the next loop iteration
         case 'dims': setDims(m.dims); updateRmax(); layoutAt = nowMs(); dirty = true; break;
         case 'scenario': runScenario(m); break;
