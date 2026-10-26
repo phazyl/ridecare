@@ -74,8 +74,8 @@ const FP = (t) => TYPES[t].L * TYPES[t].W;
 function paramsMsg() {
   const A = expectedPerYear(requestedTotal(), state.beta);
   return {
-    P: { areaKm2: state.areaKm2, parkShare: state.parkShare, parkStrip: state.parkStrip, jam: state.jam, slow: state.slow, patience: state.patience },
-    C: { on: state.colOn, perDay: A / 365, secPerDay: state.secPerDay },
+    P: { areaKm2: state.areaKm2, parkShare: state.parkShare, parkShareT: clkParkArr(), parkStrip: state.parkStrip, jam: state.jam, slow: state.slow, patience: state.patience },
+    C: { on: state.colOn, perDay: A / 365 * clkExposure(), secPerDay: clkSecPerDay() },
     simSpeed: state.simSpeed, paused: state.paused || state.advBusy, hidden: typeof document !== 'undefined' && !!document.hidden,
   };
 }
@@ -340,6 +340,121 @@ function updateYearUI() {
   $('yearStatus').textContent = (state.yearCustom ? 'Fleet edited by hand; collisions use the current fleet. ' : '') + STATUS_TXT[key];
   $('yearStatus').style.color = STATUS_COL[r];
   $('yearFleet').textContent = fmt(requestedTotal()) + ' vehicles';
+}
+
+
+/* =====================================================================
+ * 6b. TIME OF DAY  (year -> day of week -> time; sets the moving / parked split)
+ *   moving share of a type = peak_share[type] x curve(time); parked share = 1 - moving share.
+ *   Figures come from the IUM report (Tables 30, 31); the curve shape between the report's peak windows is an assumption.
+ * ===================================================================== */
+const DAYN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const CLK = { on: true, day: 1, min: 465, play: false, spdH: 2, curves: null, last: 0, lastPush: 0, usage: null };
+const dayKey = (d) => { const dt = CLK.usage.day_types; return Object.keys(dt).find((k) => dt[k].days.includes(d)) || 'weekday'; };
+
+function clkBuild(usage) {
+  CLK.usage = usage; CLK.curves = {};
+  const keys = Object.keys(usage.day_types), N = 96;
+  let refArea = 0;
+  for (const k of keys) {
+    const kf = usage.day_types[k].curve, v = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const h = (i + 0.5) / 4; let j = 1;
+      while (j < kf.length - 1 && kf[j][0] < h) j++;
+      const a = kf[j - 1], b = kf[j], f = b[0] === a[0] ? 0 : Math.min(1, Math.max(0, (h - a[0]) / (b[0] - a[0])));
+      v[i] = a[1] + (b[1] - a[1]) * f;
+    }
+    let area = 0; for (let i = 0; i < N; i++) area += v[i];
+    CLK.curves[k] = { v, area };
+    if (k === 'weekday') refArea = area;
+  }
+  for (const k of keys) {                  // weekly = 7 x daily in the report: every day has the same daily volume
+    const c = CLK.curves[k], f = refArea / c.area;
+    if (k !== 'weekday') for (let i = 0; i < N; i++) c.v[i] *= f;
+    c.mean = refArea / N;
+  }
+}
+const clkOn = () => CLK.on && !!CLK.curves;
+const clkCurve = () => CLK.curves[dayKey(CLK.day)];
+const clkLevel = () => clkCurve().v[Math.min(95, Math.floor(CLK.min / 15))];
+function clkPeak(t) { const p = CLK.usage.peak_share; const v = p.by_type[TYPES[t].id]; return v != null ? v : p.default; }
+const clkMoveShare = (t) => Math.min(1, clkPeak(t) * clkLevel());
+function clkParkArr() { return clkOn() ? TYPES.map((_, t) => 1 - clkMoveShare(t)) : null; }
+const clkExposure = () => (clkOn() ? clkLevel() / clkCurve().mean : 1);
+const clkSecPerDay = () => (clkOn() && CLK.play ? 24 * CLK.spdH : state.secPerDay);
+function clkTotals() {
+  let tot = 0, mv = 0;
+  for (let t = 0; t < nT; t++) { tot += counts[t]; mv += counts[t] * (clkOn() ? clkMoveShare(t) : 1 - state.parkShare); }
+  return { tot, mv, pk: tot - mv };
+}
+const clkFmtTime = (m) => String(Math.floor(m / 60) % 24).padStart(2, '0') + ':' + String(Math.floor(m % 60)).padStart(2, '0');
+function clkPeriod() {
+  const h = CLK.min / 60, pk = CLK.usage.day_types[dayKey(CLK.day)].peaks.find((p) => h >= p[0] && h < p[1]);
+  return pk ? pk[2] : (h < 5.5 || h >= 22 ? 'Night' : 'Off-peak');
+}
+function clkDraw() {
+  const cv = $('clkCv'); if (!cv || !CLK.curves) return;
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (!W) return;
+  if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  const k = dayKey(CLK.day), c = CLK.curves[k], pad = 4, ph = H - 16;
+  const X = (h) => pad + (W - 2 * pad) * h / 24, Y = (lv) => 4 + ph * (1 - Math.min(1.1, lv) / 1.1);
+  g.fillStyle = 'rgba(63,182,255,.16)';
+  for (const p of CLK.usage.day_types[k].peaks) g.fillRect(X(p[0]), 2, X(p[1]) - X(p[0]), ph + 2);
+  g.strokeStyle = '#2a3441'; g.fillStyle = '#8b98a8'; g.font = '10px system-ui'; g.lineWidth = 1;
+  for (let h = 0; h <= 24; h += 6) { g.beginPath(); g.moveTo(X(h), 2); g.lineTo(X(h), ph + 4); g.stroke(); g.fillText(String(h).padStart(2, '0'), Math.min(X(h), W - 14), H - 3); }
+  g.beginPath(); for (let i = 0; i < 96; i++) { const x = X((i + 0.5) / 4), y = Y(c.v[i]); i ? g.lineTo(x, y) : g.moveTo(x, y); }
+  g.strokeStyle = '#3fb6ff'; g.lineWidth = 2; g.stroke();
+  const mx = X(CLK.min / 60); g.strokeStyle = '#f2cc60'; g.lineWidth = 2; g.beginPath(); g.moveTo(mx, 2); g.lineTo(mx, ph + 4); g.stroke();
+  g.fillStyle = '#f2cc60'; g.beginPath(); g.arc(mx, Y(clkLevel()), 4, 0, 7); g.fill();
+}
+function clkUI() {
+  if (!CLK.curves) return;
+  const on = clkOn();
+  $('clkBox').classList.toggle('off', !on);
+  $('parkRange').disabled = on;
+  $('parkLbl').textContent = on ? 'Share of vehicles parked (set by the clock)' : 'Share of vehicles parked';
+  document.querySelectorAll('#dayChips button').forEach((b, i) => b.classList.toggle('on', i === CLK.day));
+  $('clkRange').value = Math.floor(CLK.min);
+  $('clkOut').textContent = clkFmtTime(CLK.min);
+  $('clkPlay').textContent = CLK.play ? '❚❚ Pause clock' : '▶ Play day';
+  const T = clkTotals(), pc = (x) => (T.tot ? (100 * x / T.tot).toFixed(1) : '0') + ' %';
+  if (on) {
+    $('parkOut').textContent = pc(T.pk); $('parkRange').value = Math.round(100 * (T.tot ? T.pk / T.tot : 0));
+    $('clkRead').innerHTML = `<b>${DAYN[CLK.day]} ${clkFmtTime(CLK.min)}</b> · ${clkPeriod()}<br>` +
+      `<span style="color:#3fb950">${fmt(T.mv)} moving (${pc(T.mv)})</span> · <span style="color:#e3a008">${fmt(T.pk)} parked (${pc(T.pk)})</span>`;
+    const dk = dayKey(CLK.day), rep = CLK.usage.report_figures;
+    $('clkNote').textContent = `Report: ${fmt(rep.hourly_total)} vehicles active in a peak hour (${(100 * CLK.usage.peak_share.default).toFixed(1)} % of the fleet), ${fmt(rep.daily_total)} per day. ` +
+      (dk === 'weekday' ? 'Peak windows are from the report; the curve between them is an estimate.' : 'The report gives no ' + DAYN[CLK.day] + ' data: peak windows and curve are assumptions, with the same daily volume as a weekday.');
+  } else { $('clkRead').textContent = 'Time of day is off: the parked-share slider below is in control.'; $('clkNote').textContent = ''; }
+  clkDraw();
+}
+function clkApply(push) { clkUI(); if (push) { CLK.lastPush = now(); pushParams(); } }
+function clkTick(t) {
+  if (!CLK.play || !clkOn() || state.paused) { CLK.last = t; return; }
+  const dt = Math.min(0.25, (t - CLK.last) / 1000); CLK.last = t;
+  CLK.min += dt * 60 / CLK.spdH;
+  if (CLK.min >= 1440) { CLK.min -= 1440; CLK.day = (CLK.day + 1) % 7; }
+  clkUI();
+  if (now() - CLK.lastPush > 100) { CLK.lastPush = now(); pushParams(); }
+}
+function clkBind() {
+  const chips = $('dayChips');
+  DAYN.forEach((n, i) => {
+    const b = document.createElement('button'); b.textContent = n; b.className = (dayKey(i) !== 'weekday') ? 'we' : '';
+    b.addEventListener('click', () => { CLK.day = i; clkApply(true); }); chips.appendChild(b);
+  });
+  $('clkOn').addEventListener('change', (ev) => { CLK.on = ev.target.checked; if (!CLK.on) CLK.play = false; clkApply(true); });
+  $('clkRange').addEventListener('input', (ev) => { CLK.min = +ev.target.value; clkApply(true); });
+  $('clkPlay').addEventListener('click', () => { CLK.play = !CLK.play; CLK.last = now(); clkApply(true); });
+  $('clkSpd').addEventListener('change', (ev) => { CLK.spdH = +ev.target.value; pushParams(); });
+  const cv = $('clkCv'); let drag = false;
+  const at = (ev) => { const r = cv.getBoundingClientRect(); CLK.min = Math.max(0, Math.min(1439, Math.round((ev.clientX - r.left) / r.width * 1440 / 5) * 5)); clkApply(true); };
+  cv.addEventListener('pointerdown', (ev) => { drag = true; try { cv.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ } at(ev); });
+  cv.addEventListener('pointermove', (ev) => { if (drag) at(ev); });
+  cv.addEventListener('pointerup', () => { drag = false; });
+  if (typeof ResizeObserver === 'function') new ResizeObserver(clkDraw).observe(cv);
 }
 
 /* =====================================================================
@@ -613,6 +728,7 @@ function updateStats() {
   $('barMark').style.left = (jam * 100) + '%';
   $('barMarkLbl').textContent = 'packing limit ' + Math.round(jam * 100) + ' %';
   if (yearsCfg) $('yearFleet').textContent = fmt(req) + ' vehicles';
+  if (CLK.curves && !CLK.play) clkUI();
   updateCollisionPanel();
 }
 
@@ -628,13 +744,16 @@ function updateNoRoom(unfit, req, areaM2) {
   let reqFoot = 0, plFoot = 0;
   for (let t = 0; t < nT; t++) { reqFoot += counts[t] * FP(t); plFoot += placed[t] * FP(t); }
   const miss = TYPES.map((t, i) => [t.name, counts[i] - placed[i]]).filter((x) => x[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const T = clkTotals(), parkWant = Math.round(T.pk), parkFit = stats.parkedN, mvFit = stats.mv;
+  const noKerb = Math.max(0, parkWant - parkFit), noLane = Math.max(0, Math.round(T.mv) - mvFit);
   $('noRoomBody').innerHTML =
     `<b>Why they are not on the street</b><br>` +
-    `Vehicles may never overlap and may not stand inside a junction. The ${fmt(req)} vehicles requested would cover ` +
-    `<b>${(reqFoot / areaM2 * 100).toFixed(1)} %</b> of the ${state.areaKm2.toFixed(3)} km² street surface (footprints only, no gaps). ` +
-    `${fmt(req - unfit)} fit, covering ${(plFoot / areaM2 * 100).toFixed(1)} %; for the others the simulation cannot find a free spot.<br>` +
-    `<span class="mut">Most affected: ${miss.map((x) => x[0] + ' ' + fmt(x[1])).join(', ')}.</span><br>` +
-    `<span class="mut">The simulation keeps retrying as traffic moves and gaps open, so this number can fall. In reality such vehicles would be parked off-street, queuing to enter, or not on the road at the same time. Raising the road area or lowering the fleet also helps.</span>`;
+    `Vehicles may never overlap and may not stand inside a junction. The ${fmt(req)} requested vehicles would cover ` +
+    `<b>${(reqFoot / areaM2 * 100).toFixed(1)} %</b> of the ${state.areaKm2.toFixed(3)} km² street surface (footprints only). ${fmt(req - unfit)} fit (${(plFoot / areaM2 * 100).toFixed(1)} %).<br>` +
+    `<span class="mut">Parked: ${fmt(parkFit)} of ${fmt(parkWant)} found kerb space${noKerb ? ' (' + fmt(noKerb) + ' did not)' : ''}. Moving: ${fmt(mvFit)} of ${fmt(Math.round(T.mv))} found lane space${noLane ? ' (' + fmt(noLane) + ' did not)' : ''}. ` +
+    `Most affected: ${miss.map((x) => x[0] + ' ' + fmt(x[1])).join(', ')}.</span><br>` +
+    `<span class="mut">Parking: the report counts 139,393 slots (132,230 motorcycle, 7,163 car), but OpenStreetMap maps only about 6 lots (about 1,100 spaces). The simulation therefore parks along street kerbs; a vehicle with no kerb space is treated as parked off-street. ` +
+    `The count can fall as traffic moves, at quieter times of day, or with a wider kerb strip or more road area.</span>`;
 }
 
 /* =====================================================================
@@ -699,7 +818,8 @@ function scenarioDefs() {
     counts: c.map((n, i) => Math.round(GOODS_IDS.includes(TYPES[i].id) ? n * 0.5 : n)), P: {} });
   const prop = c.map((n, i) => Math.round(n * (TYPES[i].count > 0 ? TYPES[i].proposed / TYPES[i].count : 1)));
   defs.push({ id: 'ium', label: 'IUM report proposal (Table 51), applied to this fleet', counts: prop, P: {} });
-  if (state.parkShare > 0) defs.push({ id: 'park', label: 'Clear kerbside parking (parked vehicles move off-street)', counts: f(1 - state.parkShare), P: { parkShare: 0 } });
+  const T = clkTotals(), pf = T.tot ? T.pk / T.tot : 0;
+  if (pf > 0.01) defs.push({ id: 'park', label: 'Clear kerbside parking (parked vehicles move off-street)', counts: f(1 - pf), P: { parkShare: 0, parkShareT: null } });
   defs.push({ id: 'deep', label: 'Deep cut: −40 % vehicles (reference)', counts: f(0.6), P: {} });
   return defs;
 }
@@ -795,6 +915,7 @@ function bindAdvisor() {
  * ===================================================================== */
 let lastStatsT = 0;
 function raf(t) {
+  clkTick(t);
   if (hotDirty) { hotDirty = false; renderHot(); needDraw = true; }
   if (needDraw || markers.length) { needDraw = false; draw(); }
   if (t - lastStatsT > 250) { lastStatsT = t; updateStats(); }
@@ -809,8 +930,20 @@ async function loadJson(url) {
   } catch (err) { return null; }
 }
 
+
+function bindFull() {
+  const p = $('panel'), btn = $('fullBtn');
+  const set = (on) => {
+    p.classList.toggle('full', on); btn.textContent = on ? '✕ Back to map' : '⤢ Full screen';
+    if (on) p.scrollTop = 0;
+    setTimeout(() => { clkDraw(); resize(); }, 300);
+  };
+  btn.addEventListener('click', () => set(!p.classList.contains('full')));
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && p.classList.contains('full')) set(false); });
+}
+
 async function init() {
-  buildTypeRows(); buildDims(); bindUI(); bindAdvisor();
+  buildTypeRows(); buildDims(); bindUI(); bindAdvisor(); bindFull();
   resize();
   if (typeof ResizeObserver === 'function') new ResizeObserver(() => { resize(); }).observe(cv.parentElement);
   const [rawNet, years] = await Promise.all([loadJson('data/network.json'), loadJson('data/years.json')]);
@@ -835,11 +968,14 @@ async function init() {
     const sh = yearsCfg.accidents.greater_male_share; if (sh > 0) { state.share = sh; $('shareNum').value = Math.round(sh * 100); }
     state.beta = yearsCfg.model.beta_default || COL.beta; $('betaRange').value = state.beta;
   } else { $('yearRange').disabled = true; }
+  if (yearsCfg && yearsCfg.usage && yearsCfg.usage.day_types) { clkBuild(yearsCfg.usage); clkBind(); }
+  else { CLK.on = false; $('clkOn').checked = false; $('clkOn').disabled = true; $('clkNote').textContent = 'data/years.json has no "usage" block: time of day is unavailable.'; }
+  { const L = $('yearTicksLbl'); if (yearsCfg) yearsCfg.years.forEach((y) => { const s = document.createElement('span'); s.textContent = y; L.appendChild(s); }); }
 
   TYPES.forEach((t, i) => { counts[i] = t.count; });
   syncTypeInputs();
   fitView();
-  updateYearUI();
+  updateYearUI(); clkUI();
   bootBackend({ cmd: 'init', raw, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: paramsMsg(), counts: Array.from(counts) });
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(raf);
 }

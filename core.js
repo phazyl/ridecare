@@ -31,10 +31,22 @@ GM.createRunner = function createRunner(post) {
   const cap = MAX_VEHICLES;
 
   /* ------------------------------ parameters ------------------------------ */
-  const P = { areaKm2: 0.894, parkShare: 0, parkStrip: 2.3, jam: 0.5, slow: false, patience: 5 };
+  const P = { areaKm2: 0.894, parkShare: 0, parkShareT: null, parkStrip: 2.3, jam: 0.5, slow: false, patience: 5 };
   const C = { on: true, perDay: 0, secPerDay: 20 };
   const S = { simSpeed: 10, paused: false, hidden: false };
   const want = new Int32Array(nT), placed = new Int32Array(nT);
+  // Parked share per vehicle type (0..1): the part of that type's fleet that stands at the kerb; the rest moves.
+  // P.parkShareT (one value per type, set by the page's clock) wins over the single P.parkShare.
+  const PS = new Float32Array(nT);
+  function updatePS() {
+    let changed = false;
+    for (let t = 0; t < nT; t++) {
+      let v = P.parkShareT && P.parkShareT.length > t ? P.parkShareT[t] : P.parkShare;
+      v = Math.min(1, Math.max(0, +v || 0));
+      if (Math.abs(v - PS[t]) > 1e-6) { PS[t] = v; changed = true; }
+    }
+    return changed;
+  }
   const FP = new Float32Array(nT), TV = new Float32Array(nT), HL = new Float32Array(nT),
         HW = new Float32Array(nT), RAD = new Float32Array(nT), VW = new Float32Array(nT);
   let RMAX = 0, pgen = 0;
@@ -121,6 +133,37 @@ GM.createRunner = function createRunner(post) {
   function poseParked(e, s, side) {
     poseAt(e, s, parkHeading(e, side), side * Math.max(0, net.ewS[e] * 0.5 - P.parkStrip * 0.5));
   }
+  // Kerb strip with rows: row 0 = middle of the strip; narrow vehicles (motorcycles ...) can also stand in two
+  // rows side by side (1 = kerb side, 2 = street side) when the strip is wide enough. The row is kept in vlat.
+  function poseParkedRow(e, s, side, t, row) {
+    const ew = net.ewS[e], base = ew * 0.5 - P.parkStrip * 0.5;
+    const dd = row ? Math.max(0, P.parkStrip * 0.5 - HW[t]) : 0;
+    const lat = Math.max(0, Math.min(ew * 0.5 - HW[t], Math.max(0, base + (row === 1 ? dd : row === 2 ? -dd : 0))));
+    poseAt(e, s, parkHeading(e, side), side * lat);
+  }
+  const ROWS1 = [0], ROWS2 = [1, 2];
+  const rowsFor = (t) => (P.parkStrip >= 4 * HW[t] ? ROWS2 : ROWS1);
+  let KE = 0, KS = 0, KSIDE = 1, KROW = 0;
+  // Look for a free kerb spot for a vehicle of type t (self = its own index, or -1). First fit: from a random
+  // point walk along the kerb in steps of one vehicle length. Sets KE/KS/KSIDE/KROW and the pose.
+  function parkSpot(t, self) {
+    const step = 2 * HL[t], rows = rowsFor(t);
+    for (let k = 0; k < PHYS.tries; k++) {
+      const e = sampleEdge(), lo = stopDist(e), hi = net.len[e] - lo;
+      if (hi - lo < step) continue;
+      const side = Math.random() < 0.5 ? 1 : -1;
+      let s = lo + Math.random() * (hi - lo);
+      for (let j = 0; j < 4 && s <= hi; j++, s += step) {
+        const r0 = (Math.random() * rows.length) | 0;
+        for (let q = 0; q < rows.length; q++) {
+          const row = rows[(r0 + q) % rows.length];
+          poseParkedRow(e, s, side, t, row);
+          if (!overlapsAny(PX, PY, PHX, PHY, t, self)) { KE = e; KS = s; KSIDE = side; KROW = row; return true; }
+        }
+      }
+    }
+    return false;
+  }
 
   function rectsOverlap(ax, ay, ahx, ahy, aL, aW, bx, by, bhx, bhy, bL, bW) {
     const dx = bx - ax, dy = by - ay;
@@ -174,39 +217,65 @@ GM.createRunner = function createRunner(post) {
     return lo;
   }
 
-  function tryPlace(t) {
+  // wantPark = true: look for a free kerb spot only; false: look for a free lane spot only.
+  function tryPlace(t, wantPark) {
     if (nv >= cap) return false;
-    const pv = Math.random(), wantPark = pv < P.parkShare;
-    for (let k = 0; k < PHYS.tries; k++) {
-      const e = sampleEdge(), zb = stopDist(e), s = zb + Math.random() * (net.len[e] - 2 * zb);   // never inside a junction box
-      const parked = wantPark && k < PHYS.tries * 0.7;
-      let dir, lat = 0, side = 0, lane = 1;
-      const oneWay = net.ow[e] === 1;
-      if (parked) { side = Math.random() < 0.5 ? 1 : -1; dir = parkHeading(e, side); poseParked(e, s, side); }
-      else {
+    const pv = wantPark ? Math.random() * PS[t] : PS[t] + (1 - PS[t]) * Math.random();
+    let e, sPos, dir, lat = 0, side = 0, lane = 1;
+    if (wantPark) {
+      if (!parkSpot(t, -1)) return false;
+      e = KE; sPos = KS; side = KSIDE; lat = KROW; dir = parkHeading(e, side);
+    } else {
+      let ok = false;
+      for (let k = 0; k < PHYS.tries && !ok; k++) {
+        e = sampleEdge(); const zb = stopDist(e); sPos = zb + Math.random() * (net.len[e] - 2 * zb);   // never inside a junction box
+        const oneWay = net.ow[e] === 1;
         dir = oneWay ? 1 : (Math.random() < 0.5 ? 1 : -1);               // one-way: only the legal direction
         lane = oneWay ? (Math.random() < 0.5 ? 1 : -1) : dir;           // one-way: either half; two-way: keep left
-        lat = lane * (0.05 + Math.random() * 0.90); poseMoving(e, s, dir, lat, t);
+        lat = lane * (0.05 + Math.random() * 0.90); poseMoving(e, sPos, dir, lat, t);
+        ok = !overlapsAny(PX, PY, PHX, PHY, t, -1);
       }
-      if (overlapsAny(PX, PY, PHX, PHY, t, -1)) continue;
-      const i = nv;
-      vlane[i] = lane; vwait[i] = 0;
-      ve[i] = e; vs[i] = s; vdir[i] = dir; vlat[i] = lat; vpref[i] = Math.abs(lat) || 0.55; vside[i] = side; vtype[i] = t;
-      vjit[i] = 0.8 + 0.4 * Math.random(); vpark[i] = pv; vpg[i] = pgen; vparked[i] = parked ? 1 : 0;
-      vx[i] = PX; vy[i] = PY; vhx[i] = PHX; vhy[i] = PHY; vnx[i] = pickNext(dir === 1 ? net.v[e] : net.u[e], e);
-      gridLink(i, cellIdx(vx[i], vy[i])); nv++;
-      return true;
+      if (!ok) return false;
     }
-    return false;
+    const i = nv;
+    vlane[i] = lane; vwait[i] = 0;
+    ve[i] = e; vs[i] = sPos; vdir[i] = dir; vlat[i] = lat; vpref[i] = Math.abs(lat) || 0.55; vside[i] = side; vtype[i] = t;
+    vjit[i] = 0.8 + 0.4 * Math.random(); vpark[i] = pv; vpg[i] = pgen; vparked[i] = wantPark ? 1 : 0;
+    vx[i] = PX; vy[i] = PY; vhx[i] = PHX; vhy[i] = PHY; vnx[i] = pickNext(dir === 1 ? net.v[e] : net.u[e], e);
+    gridLink(i, cellIdx(vx[i], vy[i])); nv++;
+    return true;
   }
 
-  function placeMany(t, need) {
-    let ok = 0, streak = 0;
-    for (let k = 0; k < need; k++) {
-      if (tryPlace(t)) { ok++; streak = 0; }
-      else if (++streak >= PHYS.failStreak) break;      // street is full for this type
+  // Per-type counts on the street right now, and the targets the clock asks for.
+  const curP = new Int32Array(nT), curM = new Int32Array(nT);
+  function countTypes() {
+    curP.fill(0); curM.fill(0);
+    for (let i = 0; i < nv; i++) { if (vparked[i]) curP[vtype[i]]++; else curM[vtype[i]]++; }
+    for (let t = 0; t < nT; t++) placed[t] = curP[t] + curM[t];
+  }
+  const tgtP = (t) => Math.round(want[t] * PS[t]);
+  const tgtM = (t) => want[t] - tgtP(t);
+
+  // Add the vehicles that are missing: parked ones first (they need kerb space that moving traffic would
+  // otherwise take), big types first. A type stops after PHYS.failStreak failed spots in a row.
+  function fillDeficits(maxTries, maxMs) {
+    countTypes();
+    const tEnd = nowMs() + maxMs; let tries = 0, got = 0;
+    for (let phase = 1; phase >= 0; phase--) {
+      for (const t of bigFirst) {
+        let streak = 0;
+        for (;;) {
+          const tot = want[t] - (curP[t] + curM[t]);
+          const need = phase ? Math.min(tgtP(t) - curP[t], tot) : Math.min(tgtM(t) - curM[t], tot);
+          if (need <= 0 || tries >= maxTries || nowMs() >= tEnd) break;
+          tries++;
+          if (tryPlace(t, phase)) { got++; streak = 0; if (phase) curP[t]++; else curM[t]++; }
+          else if (++streak >= PHYS.failStreak) break;      // no more room for this type
+        }
+      }
     }
-    return ok;
+    if (got) { for (let t = 0; t < nT; t++) placed[t] = curP[t] + curM[t]; covStale = true; }
+    return got;
   }
 
   function removeVehicles(t, k) {
@@ -220,19 +289,21 @@ GM.createRunner = function createRunner(post) {
 
   const bigFirst = TYPES.map((_, i) => i).sort((a, b) => (TYPES[b].L * TYPES[b].W) - (TYPES[a].L * TYPES[a].W));
 
-  // Incremental change of the fleet: remove surplus, then try to place what is missing (including
-  // vehicles that did not fit earlier, in case there is room now).
+  // Change of the fleet (or of its parked/moving split): remove surplus, then place what is missing
+  // (including vehicles that did not fit earlier, in case there is room now).
   function applyCounts(arr) {
     retryGap = 1000; retryAt = 0;
     let tot = 0;
     for (let t = 0; t < nT; t++) { want[t] = Math.max(0, Math.min(Math.floor(arr[t]) || 0, cap - tot)); tot += want[t]; }
     updateRmax();
+    countTypes();
     let removed = false;
     for (let t = 0; t < nT; t++) {
-      if (placed[t] > want[t]) { removeVehicles(t, placed[t] - want[t]); placed[t] = want[t]; removed = true; }
+      const have = curP[t] + curM[t];
+      if (have > want[t]) { removeVehicles(t, have - want[t]); removed = true; }
     }
     if (removed) rebuildGrid();
-    for (const t of bigFirst) if (placed[t] < want[t]) placed[t] += placeMany(t, want[t] - placed[t]);
+    fillDeficits(Infinity, Infinity);
     covStale = true;
   }
 
@@ -241,18 +312,20 @@ GM.createRunner = function createRunner(post) {
     retryGap = 1000; retryAt = 0;
     nv = 0; placed.fill(0); G.head.fill(-1);
     updateRmax();
-    for (const t of bigFirst) placed[t] = placeMany(t, want[t]);
+    fillDeficits(Infinity, Infinity);
     covStale = true;
   }
 
   /* ------------------------ parking (gradual reconcile) --------------------- */
   const FREE_LATS = [0.55, 0.85, 0.3];
   function toParked(i) {
-    const e = ve[i], s = vs[i], t = vtype[i], first = Math.random() < 0.5 ? 1 : -1;
+    const e = ve[i], sp = vs[i], t = vtype[i], first = Math.random() < 0.5 ? 1 : -1, rows = rowsFor(t);
     for (let a = 0; a < 2; a++) {
       const side = a ? -first : first;
-      poseParked(e, s, side);
-      if (!overlapsAny(PX, PY, PHX, PHY, t, i)) { commitPose(i, e, s, parkHeading(e, side), 0); vside[i] = side; vparked[i] = 1; vpg[i] = pgen; return true; }
+      for (const row of rows) {
+        poseParkedRow(e, sp, side, t, row);
+        if (!overlapsAny(PX, PY, PHX, PHY, t, i)) { commitPose(i, e, sp, parkHeading(e, side), row); vside[i] = side; vparked[i] = 1; vpg[i] = pgen; vwait[i] = 0; return true; }
+      }
     }
     return false;
   }
@@ -262,29 +335,62 @@ GM.createRunner = function createRunner(post) {
     for (let a = 0; a < FREE_LATS.length; a++) {
       const lat = lane * FREE_LATS[a];
       poseMoving(e, s, dir, lat, t);
-      if (!overlapsAny(PX, PY, PHX, PHY, t, i)) { commitPose(i, e, s, dir, lat); vlane[i] = lane; vpref[i] = FREE_LATS[a]; vside[i] = 0; vparked[i] = 0; vnx[i] = pickNext(dir === 1 ? net.v[e] : net.u[e], e); return true; }
+      if (!overlapsAny(PX, PY, PHX, PHY, t, i)) { commitPose(i, e, s, dir, lat); vlane[i] = lane; vpref[i] = FREE_LATS[a]; vside[i] = 0; vparked[i] = 0; vwait[i] = 0; vnx[i] = pickNext(dir === 1 ? net.v[e] : net.u[e], e); return true; }
     }
     return false;
   }
   function reposePark(i) {
     vpg[i] = pgen;
-    poseParked(ve[i], vs[i], vside[i]);
-    if (!overlapsAny(PX, PY, PHX, PHY, vtype[i], i)) { commitPose(i, ve[i], vs[i], vdir[i], 0); return true; }   // vdir = parked heading
+    const t = vtype[i], row = rowsFor(t).includes(vlat[i]) ? vlat[i] : rowsFor(t)[0];
+    poseParkedRow(ve[i], vs[i], vside[i], t, row);
+    if (!overlapsAny(PX, PY, PHX, PHY, t, i)) { commitPose(i, ve[i], vs[i], vdir[i], row); return true; }   // vdir = parked heading
     return false;
   }
-  // A vehicle is parked iff its fixed random draw < parkShare. Transitions are attempted a slice at a time;
-  // a vehicle whose spot is blocked simply keeps its state and is retried on the next pass.
-  let cursor = 0;
-  function reconcile(maxScan) {
-    if (nv === 0) return false;
+  // Moving <-> parked as the clock changes the parked share. Every 250 ms: count both groups per type, convert the
+  // surplus (a moving vehicle drives to a free kerb spot; a parked one pulls out), then add what is still missing.
+  // A vehicle that wants to park but finds no kerb space anywhere it looks is taken off the street: in the model it
+  // is parked off-street (garage, lot, elsewhere). It is counted as "no room" until a kerb spot opens up.
+  let balAt = 0, retryAt = 0, retryGap = 1000, cursor = 0;
+  const surM = new Int32Array(nT), surP = new Int32Array(nT);
+  function toParkedSeek(i) {
+    if (toParked(i)) return true;                                   // right where it stands, either kerb side
+    if (!parkSpot(vtype[i], i)) return false;                       // otherwise look for a free kerb spot elsewhere
+    commitPose(i, KE, KS, parkHeading(KE, KSIDE), KROW);
+    vside[i] = KSIDE; vparked[i] = 1; vpg[i] = pgen; vwait[i] = 0;
+    return true;
+  }
+  function balance(t0) {
+    if (!net || t0 - balAt < 250) return false;
+    balAt = t0;
+    countTypes();
+    let anySur = false;
+    for (let t = 0; t < nT; t++) {
+      surM[t] = Math.max(0, curM[t] - tgtM(t)); surP[t] = Math.max(0, curP[t] - tgtP(t));
+      if (surM[t] || surP[t]) anySur = true;
+    }
     let changed = false;
-    const steps = Math.min(nv, maxScan);
+    const rm = [], steps = Math.min(nv, anySur ? 25000 : 6000);
     for (let k = 0; k < steps; k++) {
       if (cursor >= nv) cursor = 0;
-      const i = cursor++;
-      const wantP = vpark[i] < P.parkShare ? 1 : 0;
-      if (wantP !== vparked[i]) { if (wantP ? toParked(i) : toMoving(i)) changed = true; }
-      else if (vparked[i] && vpg[i] !== pgen) { if (reposePark(i)) changed = true; }
+      const i = cursor++, t = vtype[i];
+      if (vparked[i]) {
+        if (surP[t] > 0) { if (toMoving(i)) { surP[t]--; changed = true; } }
+        else if (vpg[i] !== pgen) { if (reposePark(i)) changed = true; }
+      } else if (surM[t] > 0) {
+        surM[t]--; changed = true;
+        if (!toParkedSeek(i)) rm.push(i);
+      }
+    }
+    if (rm.length) {
+      rm.sort((a, b) => b - a);
+      for (const i of rm) { const last = nv - 1; if (i !== last) copyVeh(i, last); nv--; }
+      rebuildGrid();
+    }
+    if (changed) { countTypes(); covStale = true; }
+    if (t0 >= retryAt) {                                              // vehicles that did not fit: retry with back-off (1 s to 8 s)
+      const got = fillDeficits(240, 3);
+      if (got) { retryGap = 1000; changed = true; } else retryGap = Math.min(8000, retryGap * 2);
+      retryAt = t0 + retryGap;
     }
     return changed;
   }
@@ -499,24 +605,6 @@ GM.createRunner = function createRunner(post) {
   }
 
 
-  /* ---------------- retry of vehicles that did not fit (cheap, throttled) ------------- */
-  // Placement is random-sequential, so a vehicle that found no room at start-up may find a gap later as
-  // traffic moves. Each round makes a small fixed number of attempts within a time cap; a round that
-  // finds nothing doubles the wait (1 s -> 8 s), any layout/count change resets it.
-  let retryAt = 0, retryGap = 1000;
-  const deficit = () => { let d = 0; for (let t = 0; t < nT; t++) d += Math.max(0, want[t] - placed[t]); return d; };
-  function retryUnplaced(maxMs) {
-    const tEnd = nowMs() + maxMs; let got = 0, tries = 0;
-    for (const t of bigFirst) {
-      while (placed[t] < want[t] && tries < 240 && nowMs() < tEnd) {
-        tries++;
-        if (tryPlace(t)) { placed[t]++; got++; } 
-      }
-    }
-    if (got) covStale = true;
-    return got;
-  }
-
   /* ---------------------- hotspot ranking (live, every ~2 s) ---------------------- */
   // Score = average number of vehicles waiting on a street over the window (vehicle-seconds waiting / window).
   // Neighbouring streets are merged so a queue that spills over several streets counts once.
@@ -565,6 +653,7 @@ GM.createRunner = function createRunner(post) {
     cancelled = false; cancelAt = 0;
     Object.assign(P, m.p.P); Object.assign(C, { on: false }); S.paused = false; S.hidden = false;
     P.jam = Math.max(0.01, P.jam);
+    updatePS();
     setupNet(m);
     nv = 0; placed.fill(0); relocN = 0; simT = 0; pgen = 0;
     applyCounts(m.counts);
@@ -576,7 +665,7 @@ GM.createRunner = function createRunner(post) {
       try {
         while (simT < total && nowMs() - tStart < 40) {
           if (simT >= nextCov) { refreshCoverage(); nextCov = simT + 2; }
-          if (simT >= nextRetry) { retryUnplaced(4); nextRetry = simT + 3; }
+          if (simT >= nextRetry) { fillDeficits(240, 4); nextRetry = simT + 3; }
           if (!measuring && simT >= warm) { measuring = true; acc.steps = acc.mv = acc.blocked = acc.sumV = acc.sumF = 0; rel0 = relocN; t0m = simT; }
           substep(PHYS.maxStep); simT += PHYS.maxStep;
         }
@@ -611,7 +700,7 @@ GM.createRunner = function createRunner(post) {
     lastT = t0;
     if (pendCounts) { const c = pendCounts; pendCounts = null; applyCounts(c); dirty = true; }
     if (layoutAt && t0 - layoutAt > 150) { layoutAt = 0; replaceAll(); dirty = true; }   // debounced: sliders fire often
-    if (reconcile(3000)) { covStale = true; dirty = true; }
+    if (balance(t0)) { covStale = true; dirty = true; }
 
     const running = !S.paused && !S.hidden && nv > 0;
     if (running) {
@@ -625,7 +714,6 @@ GM.createRunner = function createRunner(post) {
       simAcc = 0;                       // anything not simulated is dropped; simRate reports the shortfall
       winSim += simDone; winReal += dtReal; hotSim += simDone; simT += simDone;
       dirty = true;
-      if (t0 >= retryAt && deficit() > 0) { retryAt = t0 + retryGap; if (retryUnplaced(3)) { retryGap = 1000; dirty = true; } else retryGap = Math.min(8000, retryGap * 2); }
       if (t0 - hotAt > 2000) { hotAt = t0; computeHotspots(); }
     } else simAcc = 0;
 
@@ -646,6 +734,7 @@ GM.createRunner = function createRunner(post) {
   function applyParams(p) {
     const oldArea = P.areaKm2, oldStrip = P.parkStrip;
     Object.assign(P, p.P); Object.assign(C, p.C);
+    if (updatePS()) dirty = true;
     S.simSpeed = p.simSpeed; S.paused = !!p.paused; S.hidden = !!p.hidden;
     P.jam = Math.max(0.01, P.jam);
     if (net) {

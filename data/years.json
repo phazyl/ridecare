@@ -560,5 +560,355 @@
    ]
   },
   "note": "National cumulative registrations by type, used only for the 2021-2023 shape of each type. Sim counts come from the IUM report Table 3, not from NBS."
+ },
+ "usage": {
+  "_readme": "Time-of-day module. Moving share of type t at hour h = peak_share[t] x curve(h). Parked share = 1 - moving share. The same shares apply in every year (the report gives none per year).",
+  "source": "IUM report Table 30 (use of vehicles, hourly) and Table 31 (peak hours).",
+  "peak_share": {
+   "default": 0.1105,
+   "default_note": "13,159 vehicles per hour / 119,093 fleet (Table 30 total / Table 3 total).",
+   "by_type": {
+    "moto": 0.1056,
+    "car": 0.2039,
+    "pickup": 0.1127,
+    "lorry": 0.1494,
+    "van": 0.1667,
+    "jeep": 0.1695,
+    "ebike": 0.1435,
+    "amb": 0.1795
+   },
+   "by_type_note": "Table 30 hourly count / Table 3 count for the types Table 30 lists. Other types use the default. Scooter is left at the default because Table 30's battery-scooter row (daily 210) does not match the 1,473 fleet.",
+   "status": "report"
+  },
+  "report_figures": {
+   "hourly_total": 13159,
+   "daily_total": 74546,
+   "weekly_total": 519685,
+   "note": "Weekly = 7 x daily, so every day of the week is given the same daily volume; only the shape differs. For most types hourly = daily / 6."
+  },
+  "day_types": {
+   "weekday": {
+    "label": "Sun-Thu",
+    "days": [
+     0,
+     1,
+     2,
+     3,
+     4
+    ],
+    "peaks": [
+     [
+      7.25,
+      8.25,
+      "Morning peak"
+     ],
+     [
+      12,
+      14.25,
+      "Midday peak"
+     ],
+     [
+      16,
+      21,
+      "Evening peak"
+     ]
+    ],
+    "peaks_source": "Table 31, weekdays: 07:15-08:15, 12:00-14:15, 16:00-21:00.",
+    "curve": [
+     [
+      0,
+      0.04
+     ],
+     [
+      4.5,
+      0.03
+     ],
+     [
+      5.5,
+      0.12
+     ],
+     [
+      6.5,
+      0.45
+     ],
+     [
+      7.25,
+      0.9
+     ],
+     [
+      7.75,
+      1
+     ],
+     [
+      8.25,
+      0.9
+     ],
+     [
+      9,
+      0.45
+     ],
+     [
+      10,
+      0.25
+     ],
+     [
+      11,
+      0.45
+     ],
+     [
+      12,
+      0.9
+     ],
+     [
+      12.5,
+      1
+     ],
+     [
+      13.3,
+      0.6
+     ],
+     [
+      14.25,
+      0.45
+     ],
+     [
+      15.5,
+      0.4
+     ],
+     [
+      16.5,
+      1
+     ],
+     [
+      17.5,
+      0.8
+     ],
+     [
+      18.5,
+      0.55
+     ],
+     [
+      20,
+      0.4
+     ],
+     [
+      21,
+      0.3
+     ],
+     [
+      22,
+      0.15
+     ],
+     [
+      23,
+      0.07
+     ],
+     [
+      24,
+      0.04
+     ]
+    ],
+    "curve_status": "assumption: peaks at the report's windows, with 1.0 = the observed peak hour; the rest is interpolated."
+   },
+   "friday": {
+    "label": "Friday",
+    "days": [
+     5
+    ],
+    "peaks": [
+     [
+      10,
+      10.5,
+      "Morning peak"
+     ],
+     [
+      13,
+      14,
+      "Midday peak"
+     ],
+     [
+      16,
+      21,
+      "Evening peak"
+     ]
+    ],
+    "peaks_source": "Table 31, weekends (10:00-10:30, 13:00-14:00) and note: Friday evening peak 16:00-21:00.",
+    "curve": [
+     [
+      0,
+      0.05
+     ],
+     [
+      5,
+      0.03
+     ],
+     [
+      7,
+      0.06
+     ],
+     [
+      9,
+      0.12
+     ],
+     [
+      10.25,
+      0.5
+     ],
+     [
+      11,
+      0.25
+     ],
+     [
+      12,
+      0.15
+     ],
+     [
+      13,
+      0.6
+     ],
+     [
+      13.75,
+      0.8
+     ],
+     [
+      14.5,
+      0.4
+     ],
+     [
+      15.5,
+      0.5
+     ],
+     [
+      16.5,
+      0.95
+     ],
+     [
+      18,
+      1
+     ],
+     [
+      19.5,
+      0.8
+     ],
+     [
+      21,
+      0.5
+     ],
+     [
+      22,
+      0.2
+     ],
+     [
+      23,
+      0.1
+     ],
+     [
+      24,
+      0.05
+     ]
+    ],
+    "curve_status": "assumption; scaled so the day has the same total volume as a weekday."
+   },
+   "saturday": {
+    "label": "Saturday",
+    "days": [
+     6
+    ],
+    "peaks": [
+     [
+      10,
+      10.5,
+      "Morning peak"
+     ],
+     [
+      13,
+      14,
+      "Midday peak"
+     ],
+     [
+      16,
+      20,
+      "Evening peak"
+     ]
+    ],
+    "peaks_source": "Table 31, weekends (10:00-10:30, 13:00-14:00) and note: Saturday evening peak 16:00-20:00.",
+    "curve": [
+     [
+      0,
+      0.05
+     ],
+     [
+      5,
+      0.03
+     ],
+     [
+      7,
+      0.06
+     ],
+     [
+      9,
+      0.15
+     ],
+     [
+      10.25,
+      0.55
+     ],
+     [
+      11,
+      0.3
+     ],
+     [
+      12,
+      0.25
+     ],
+     [
+      13,
+      0.6
+     ],
+     [
+      13.75,
+      0.75
+     ],
+     [
+      14.5,
+      0.4
+     ],
+     [
+      15.5,
+      0.5
+     ],
+     [
+      16.5,
+      0.9
+     ],
+     [
+      18,
+      1
+     ],
+     [
+      19.5,
+      0.75
+     ],
+     [
+      20.5,
+      0.3
+     ],
+     [
+      22,
+      0.12
+     ],
+     [
+      23,
+      0.07
+     ],
+     [
+      24,
+      0.05
+     ]
+    ],
+    "curve_status": "assumption; scaled so the day has the same total volume as a weekday."
+   }
+  },
+  "week_note": "Days are numbered 0 = Sunday ... 6 = Saturday. Sun-Thu are treated as weekdays and Fri/Sat as the weekend; the report says only 'weekdays' and 'weekends'."
  }
 }

@@ -28,6 +28,18 @@
   #legend .lr{display:flex;justify-content:space-between}
   #attr{position:absolute;left:12px;bottom:8px;font-size:11px;color:var(--mut)}
   #panel{background:var(--panel);border-left:1px solid var(--line);overflow:auto;-webkit-overflow-scrolling:touch;padding:14px 16px 24px}
+  #phead{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+  #phead h1{flex:1}
+  #phead button{white-space:nowrap;font-size:12px}
+  #panel.full{position:fixed;inset:0;z-index:50;border:0;padding:18px 28px 32px;animation:slidein .25s ease-out}
+  @keyframes slidein{from{transform:translateX(100%)}to{transform:none}}
+  #panel.full #secs{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px;align-items:start;margin-top:8px}
+  #panel.full .sec{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:4px 16px 14px;min-width:0}
+  #panel.full .sec>h3{border-top:0;margin-top:12px;padding-top:0}
+  #panel.full #phead h1{font-size:20px}
+  #panel.full .sub{max-width:900px}
+  #panel.full .sec .chips button.on{background:var(--acc);color:#0d1117}
+  #panel.full .sec button:not(.on),#panel.full .sec input[type=number],#panel.full .sec select{background:var(--bg)}
   h1{font-size:16px;margin:0 0 2px}
   .sub{color:var(--mut);font-size:12px;margin-bottom:12px}
   h3{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:18px 0 8px;border-top:1px solid var(--line);padding-top:12px}
@@ -65,6 +77,15 @@
   #noRoomBody{display:none;margin-top:6px;background:#0d1117f2;border:1px solid var(--line);border-radius:8px;padding:9px 11px;color:var(--txt);line-height:1.45}
   #noRoom.open #noRoomBody{display:block}
   #noRoomBody .mut{color:var(--mut)}
+  .ticks{display:flex;justify-content:space-between;font-size:11px;color:var(--mut);margin:-2px 2px 4px}
+  .chips{display:flex;gap:4px;margin:4px 0 8px}
+  .chips button{flex:1;padding:6px 0;font-size:12px}
+  .chips button.we{border-style:dashed}
+  .chips button.on{background:var(--acc);color:#0d1117;border-color:var(--acc);font-weight:700}
+  #clkCv{width:100%;height:90px;display:block;background:var(--bg);border:1px solid var(--line);border-radius:6px;touch-action:none;cursor:pointer}
+  .clkread{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin:6px 0;font-size:13px}
+  .mut{color:var(--mut)}
+  #clkBox.off{opacity:.45;pointer-events:none}
   .advlevel{display:flex;align-items:center;gap:10px;margin:2px 0 6px}
   .advlevel .chip{font-weight:700;padding:3px 10px;border-radius:12px;color:#0d1117}
   .hot{border:1px solid var(--line);border-left-width:4px;border-radius:8px;background:var(--panel2);padding:7px 9px;margin:7px 0;cursor:pointer}
@@ -103,10 +124,12 @@
   </div>
 
   <aside id="panel">
-    <h1>Greater Malé road capacity simulator</h1>
+    <div id="phead"><h1>Greater Malé road capacity simulator</h1><button id="fullBtn" title="Show all controls full screen (Esc to close)">⤢ Full screen</button></div>
     <div class="sub">Vehicle counts from the IUM vehicle-restriction report (Table 3). Drag to pan, scroll to zoom — zoom in past ~3 px/m to see true-scale vehicles.</div>
 
-    <h3 style="margin-top:6px;border-top:0;padding-top:0">Surface area covered</h3>
+    <div id="secs">
+    <section class="sec">
+<h3 style="margin-top:6px;border-top:0;padding-top:0">Surface area covered</h3>
     <div id="barWrap"><div id="barFill"></div><div id="barMark" title="Packing limit"></div></div>
     <div id="barLbl"><span>0 %</span><span id="barMarkLbl">packing limit</span><span>100 %</span></div>
     <div class="stat"><span>Road area</span><b id="sArea">–</b></div>
@@ -122,8 +145,9 @@
     <div class="stat"><span>Road area at ≥80 % of jam</span><b id="sCong">–</b></div>
     <div class="stat"><span>Geometric ceiling at this mix</span><b id="sCeil">–</b></div>
     <div class="note">Geometric ceiling = packing limit × road area ÷ mean vehicle footprint. It is a space limit, not a traffic-flow capacity. Every vehicle is placed with an overlap check and only moves into free space, so vehicles never overlap; whatever does not fit is reported under “Placement”. The simulation runs in a background worker. If the device cannot keep up, the “Simulation rate” falls below the selected speed instead of the page freezing. This is a simplified model, not a calibrated traffic forecast.</div>
-
-    <h3>Traffic advisor</h3>
+    </section>
+    <section class="sec">
+<h3>Traffic advisor</h3>
     <div class="advlevel"><span class="chip" id="advChip">–</span><span id="advHead" class="note" style="margin:0"></span></div>
     <label class="chk"><input type="checkbox" id="hotChk" checked> Mark hotspots on the map</label>
     <div id="hotList"><div class="note">Collecting data… hotspots appear after a few seconds of running.</div></div>
@@ -134,21 +158,38 @@
     <div id="advProg" hidden><div id="advProgFill"></div></div>
     <div class="note" id="advProgTxt"></div>
     <div id="advRes"></div>
-
-    <h3>Historical &amp; projected fleet</h3>
-    <div class="line"><label for="yearRange">Select Year</label><output id="yearOut">2024</output></div>
-    <input type="range" id="yearRange" min="2021" max="2026" step="1" value="2024">
+    </section>
+    <section class="sec">
+<h3>Year, day &amp; time</h3>
+    <div class="line"><label for="yearRange">1 · Year</label><output id="yearOut">2024</output></div>
+    <input type="range" id="yearRange" min="2021" max="2026" step="1" value="2024" list="yearTicks">
+    <div id="yearTicksLbl" class="ticks"></div>
     <div class="note" id="yearStatus">Loading…</div>
     <div class="stat"><span>Total fleet size</span><b id="yearFleet">–</b></div>
 
-    <h3>Road area</h3>
+    <div class="line" style="margin-top:10px"><label>2 · Day of the week</label></div>
+    <div id="dayChips" class="chips"></div>
+    <label class="chk"><input type="checkbox" id="clkOn" checked> Use time of day (sets moving / parked from the report)</label>
+    <div id="clkBox">
+      <div class="line"><label>3 · Time</label><output id="clkOut">07:45</output></div>
+      <canvas id="clkCv" height="90"></canvas>
+      <input type="range" id="clkRange" min="0" max="1439" step="5" value="465">
+      <div class="line"><button id="clkPlay">▶ Play day</button><span class="mut">1 hour =</span>
+        <select id="clkSpd"><option value="1">1 s</option><option value="2" selected>2 s</option><option value="5">5 s</option><option value="10">10 s</option></select></div>
+      <div id="clkRead" class="clkread"></div>
+      <div class="note" id="clkNote"></div>
+    </div>
+    </section>
+    <section class="sec">
+<h3>Road area</h3>
     <div class="line"><label for="areaRange">Street surface area</label><output id="areaOut"></output></div>
     <input type="range" id="areaRange">
     <div class="btns" style="margin-top:6px">
       <button id="areaOsmnx">0.894 km² · OSMnx</button><button id="areaReport">0.902 km² · report</button>
     </div>
-
-    <h3>Fleet by vehicle type</h3>
+    </section>
+    <section class="sec">
+<h3>Fleet by vehicle type</h3>
     <div class="note" style="margin-top:0">Presets and the slider scale the whole fleet at today’s mix. Edit single types below.</div>
     <div class="note" id="shapeNote"><b>Legend.</b> Each swatch shows the type’s colour and its true proportions (length × width). Zoomed out, every vehicle is drawn as a dot in that colour, enlarged so it stays visible. Zoom in past about 3 px per metre and vehicles become true-size rectangles pointing the way they drive. Parked vehicles are drawn paler.</div>
     <div class="btns" id="presets"></div>
@@ -156,9 +197,10 @@
     <input type="range" id="scaleRange" min="0" max="200" step="1" value="100">
     <div id="types"></div>
     <details id="otherWrap" style="margin-top:8px"><summary id="otherSum">Other vehicle types</summary><div id="typesOther"></div></details>
-
-    <h3>Parking &amp; movement</h3>
-    <div class="line"><label for="parkRange">Share of vehicles parked</label><output id="parkOut">0 %</output></div>
+    </section>
+    <section class="sec">
+<h3>Parking &amp; movement</h3>
+    <div class="line"><label for="parkRange" id="parkLbl">Share of vehicles parked</label><output id="parkOut">0 %</output></div>
     <input type="range" id="parkRange" min="0" max="100" step="1" value="0">
     <div class="line"><label for="stripNum">Kerbside parking strip (m per side)</label><input type="number" id="stripNum" min="0.5" max="4" step="0.1" value="2.3" style="width:70px"></div>
     <div class="line"><label for="patRange">Gridlock breaker: relocate after waiting</label><output id="patOut">5 s</output></div>
@@ -172,8 +214,9 @@
     <input type="range" id="dotRange" min="1" max="6" step="0.5" value="2">
     <label class="chk"><input type="checkbox" id="heatChk" checked> Colour streets by local coverage</label>
     <label class="chk"><input type="checkbox" id="slowChk"> Reduce vehicle speeds as local street coverage increases</label>
-
-    <h3>Collisions (illustrative estimate; not calibrated)</h3>
+    </section>
+    <section class="sec">
+<h3>Collisions (illustrative estimate; not calibrated)</h3>
     <div class="note" style="margin-top:0">Vehicles never overlap, so no collision is detected in the simulation. The figures are a statistical estimate: police-reported accidents × Greater Malé share, scaled by (fleet ÷ 2024 fleet)<sup>β</sup>. Red flashes on the map are random draws at that rate.</div>
     <label class="chk"><input type="checkbox" id="colChk" checked> Enable collision simulation</label>
     <div class="line"><label for="secDayRange">Real seconds per sim day</label><output id="secDayOut">20 s</output></div>
@@ -197,8 +240,9 @@
     <div class="stat"><span>Police reported (obs)</span><b id="colObs">–</b></div>
     <div class="stat"><span>Simulation run</span><b id="colRun">–</b></div>
     <button id="colReset" style="width:100%;margin-top:8px;">Reset Collision Counters</button>
-
-    <h3>Vehicle dimensions</h3>
+    </section>
+    <section class="sec">
+<h3>Vehicle dimensions</h3>
     <details>
       <summary>Edit footprints &amp; free-flow speeds</summary>
       <table class="dims" id="dims"></table>
@@ -207,6 +251,8 @@
 
     <div class="note" style="margin-top:16px">
       Model: vehicles are placed area-weighted on the street network (wide, long streets get proportionally more) and drive on the left. Parked vehicles sit in the kerbside strip. Vehicles keep clear of junction boxes: they stop at a stop line and cross when there is room beyond. If the slowdown option is on, they slow as local coverage approaches the packing limit; with it off, they keep their free-flow speed until blocked.
+    </div>
+    </section>
     </div>
   </aside>
 </div>
