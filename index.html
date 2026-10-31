@@ -158,6 +158,7 @@
       <div class="note" id="npSelInfo" style="margin-top:2px"></div>
       <div class="line"><label for="dirSel"><b>Direction of traffic</b></label></div>
       <select id="dirSel" style="width:100%"><option value="0">Two-way</option><option value="1"></option><option value="2"></option></select>
+      <label class="chk"><input type="checkbox" id="clChk"> <b>Closed to all traffic</b>: vehicles must avoid it (no driving, no parking)</label>
       <label class="chk"><input type="checkbox" id="npAll"> <span id="npAllTxt">Apply to every segment with this name</span></label>
       <div class="line"><label><b>Parking</b></label></div>
       <label class="chk"><input type="checkbox" id="npL" checked> <span style="color:#ffa62b">Left kerb</span>: parking allowed</label>
@@ -165,7 +166,7 @@
     </div>
     <div class="note" id="dirSummary"></div>
     <div class="note" id="npSummary"></div>
-    <div class="line"><button id="dirReset" title="Directions as in OpenStreetMap">Original directions</button><button id="npReset" title="Boduthakurufaanu Magu ring road and the Malé–Hulhumalé bridge">Default parking</button><button id="npClear">Allow all parking</button></div>
+    <div class="line"><button id="dirReset" title="Directions as in OpenStreetMap; nothing closed">Reset directions &amp; closures</button><button id="npReset" title="Boduthakurufaanu Magu ring road and the Malé–Hulhumalé bridge">Default parking</button><button id="npClear">Allow all parking</button></div>
     <div class="note">Red dashes on the map = closed kerbs; arrows on the selected street = direction of travel.</div>
     </section>
     <section class="sec">

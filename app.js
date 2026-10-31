@@ -497,10 +497,11 @@ function npStored() {
   return null;
 }
 function npLoadFlow() {                                    // street directions saved in this browser (applied before kerb rules)
-  const o = npStored(); if (!o || !Array.isArray(o.f)) return;
+  const o = npStored(); if (!o) return;
   const ow = net.ow.slice(), fl = net.fl.slice();
-  for (const [e, a, f] of o.f) if (e >= 0 && e < net.E) { ow[e] = a ? 1 : 0; fl[e] = f ? 1 : 0; }
+  for (const [e, a, f] of (o.f || [])) if (e >= 0 && e < net.E) { ow[e] = a ? 1 : 0; fl[e] = f ? 1 : 0; }
   GM.applyFlow(net, ow, fl);
+  if (Array.isArray(o.c)) { const cl = new Uint8Array(net.E); for (const e of o.c) if (e >= 0 && e < net.E) cl[e] = 1; GM.setClosed(net, cl); }
 }
 function npLoad() {
   const o = npStored();
@@ -509,9 +510,9 @@ function npLoad() {
 }
 function npSave() {
   try {
-    const b = [], f = [];
-    for (let e = 0; e < net.E; e++) { if (NP.pk[e]) b.push([e, NP.pk[e]]); if (net.ow[e] !== net.ow0[e] || net.fl[e]) f.push([e, net.ow[e], net.fl[e]]); }
-    localStorage.setItem(NP.key, JSON.stringify({ gen: npGen(), n: net.E, b, f }));
+    const b = [], f = [], c = [];
+    for (let e = 0; e < net.E; e++) { if (net.cl[e]) c.push(e); if (NP.pk[e]) b.push([e, NP.pk[e]]); if (net.ow[e] !== net.ow0[e] || net.fl[e]) f.push([e, net.ow[e], net.fl[e]]); }
+    localStorage.setItem(NP.key, JSON.stringify({ gen: npGen(), n: net.E, b, f, c }));
   } catch (err) { /* ignore */ }
 }
 const pushNp = () => { if (sim && NP.pk) sim.post({ cmd: 'noPark', mask: Array.from(NP.pk) }); };
@@ -529,11 +530,12 @@ function npRefresh(push) {
   if (push) { npSave(); pushNp(); }
 }
 function dirSummary() {
-  let ow = 0, tw = 0, edited = 0, trap = 0;
+  let ow = 0, tw = 0, edited = 0, trap = 0, closed = 0, closedLen = 0;
   const inc = new Uint8Array(net.N);
-  for (let e = 0; e < net.E; e++) { if (net.ow[e]) { ow++; inc[net.v[e]] = 1; } else { tw++; inc[net.u[e]] = 1; inc[net.v[e]] = 1; } if (net.ow[e] !== net.ow0[e] || net.fl[e]) edited++; }
-  for (let e = 0; e < net.E; e++) if (net.ow[e]) { const v = net.v[e]; if (net.adjOff[v + 1] === net.adjOff[v]) trap++; else if (!inc[net.u[e]]) trap++; }
-  $('dirSummary').innerHTML = `${ow} one-way and ${tw} two-way segments` + (edited ? ` · <b>${edited} changed by you</b>` : '') +
+  for (let e = 0; e < net.E; e++) { if (net.cl[e]) { closed++; closedLen += net.len[e]; continue; } if (net.ow[e]) { ow++; inc[net.v[e]] = 1; } else { tw++; inc[net.u[e]] = 1; inc[net.v[e]] = 1; } if (net.ow[e] !== net.ow0[e] || net.fl[e]) edited++; }
+  for (let e = 0; e < net.E; e++) if (net.ow[e] && !net.cl[e]) { const v = net.v[e]; if (net.adjOff[v + 1] === net.adjOff[v]) trap++; else if (!inc[net.u[e]]) trap++; }
+  $('dirSummary').innerHTML = `${ow - 0} one-way and ${tw} two-way segments` + (edited ? ` · <b>${edited} changed by you</b>` : '') +
+    (closed ? `<br><b>${closed} segment${closed === 1 ? '' : 's'} closed to traffic</b> (${(closedLen / 1000).toFixed(1)} km)` : '') +
     (trap ? `<br><span style="color:#e3a008">⚠ ${trap} one-way segment${trap === 1 ? '' : 's'} lead into a dead end or cannot be entered; vehicles there wait and are then relocated.</span>` : '');
 }
 const COMP = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
@@ -551,10 +553,16 @@ function setDirection(mode) {                              // 0 two-way, 1 one-w
   }
   applyStreets(ow, fl);
 }
-function applyStreets(ow, fl) {
+function setClosedSel(on) {
+  if (NP.sel == null) return;
+  const cl = net.cl.slice(); for (const e of npSelEdges()) cl[e] = on ? 1 : 0;
+  applyStreets(net.ow.slice(), net.fl.slice(), cl);
+}
+function applyStreets(ow, fl, cl) {
   for (let e = 0; e < net.E; e++) if ((fl[e] ? 1 : 0) !== net.fl[e]) { const m = NP.pk[e]; NP.pk[e] = ((m & 1) << 1) | ((m >> 1) & 1); }   // same physical kerb after a reversal
   GM.applyFlow(net, ow, fl);
-  if (sim) sim.post({ cmd: 'streets', ow: Array.from(ow), fl: Array.from(fl), mask: Array.from(NP.pk) });
+  if (cl) GM.setClosed(net, cl);
+  if (sim) sim.post({ cmd: 'streets', ow: Array.from(ow), fl: Array.from(fl), mask: Array.from(NP.pk), cl: cl ? Array.from(cl) : null });
   npRefresh(false); npSave();
 }
 function npSelEdges() {
@@ -574,6 +582,7 @@ function npUpdateSel() {
   const dv = origVec(e), A = compass(dv), B = compass([-dv[0], -dv[1]]), ds = $('dirSel');
   ds.options[1].textContent = 'One-way, towards ' + A; ds.options[2].textContent = 'One-way, towards ' + B;
   ds.value = net.ow[e] ? (net.fl[e] ? '2' : '1') : '0';
+  $('clChk').checked = !!net.cl[e];
   $('npL').checked = !(NP.pk[e] & 1); $('npR').checked = !(NP.pk[e] & 2);
   let same = 0; if (nm) for (let k = 0; k < net.E; k++) if (net.nm[k] === net.nm[e]) same++;
   $('npAll').checked = NP.all && same > 0; $('npAll').disabled = !nm || same < 2;
@@ -615,6 +624,11 @@ function drawNp(sc, cx, cy, hw, hh) {
   const wx0 = cx - hw / sc - 40, wx1 = cx + hw / sc + 40, wy0 = cy - hh / sc - 40, wy1 = cy + hh / sc + 40;
   const vis = (e) => !(net.bx1[e] < wx0 || net.bx0[e] > wx1 || net.by1[e] < wy0 || net.by0[e] > wy1);
   ctx.lineCap = 'butt';
+  for (let e = 0; e < net.E; e++) {                                  // streets closed to traffic: dark street with a red cross-hatch line
+    if (!net.cl[e] || !vis(e)) continue;
+    edge(e, 0, '#0d1117', Math.max(2, net.ewS[e] * sc), []);
+    edge(e, 0, '#ff3b30', Math.max(1.5, Math.min(4, net.ewS[e] * sc * 0.25)), [8, 6]);
+  }
   for (const e of NP.list) {
     if (!vis(e)) continue;
     if (NP.pk[e] & 1) edge(e, 1, '#ff5d5d', 2, [4, 3]);
@@ -643,8 +657,9 @@ function drawNp(sc, cx, cy, hw, hh) {
 }
 function npBind() {
   const dl = $('npNames'); net.names.forEach((n) => { const o = document.createElement('option'); o.value = n; dl.appendChild(o); });
+  $('clChk').addEventListener('change', (ev) => setClosedSel(ev.target.checked));
   $('dirSel').addEventListener('change', (ev) => setDirection(parseInt(ev.target.value, 10)));
-  $('dirReset').addEventListener('click', () => { applyStreets(net.ow0, new Uint8Array(net.E)); });
+  $('dirReset').addEventListener('click', () => { applyStreets(net.ow0, new Uint8Array(net.E), new Uint8Array(net.E)); });
   $('npL').addEventListener('change', (ev) => npSetSide(1, ev.target.checked));
   $('npR').addEventListener('change', (ev) => npSetSide(2, ev.target.checked));
   $('npAll').addEventListener('change', (ev) => { NP.all = ev.target.checked; npUpdateSel(); needDraw = true; });
@@ -1077,7 +1092,7 @@ function advPump() {
     };
     w.onerror = () => advFail('a test worker failed to start');
     const P = Object.assign(paramsMsg().P, d.P);
-    w.postMessage({ cmd: 'scenario', id: d.id, raw: rawNetwork, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: { P }, counts: d.counts, warm: 25, meas: 15, noPark: Array.from(NP.pk), flow: { ow: Array.from(net.ow), fl: Array.from(net.fl) } });
+    w.postMessage({ cmd: 'scenario', id: d.id, raw: rawNetwork, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: { P }, counts: d.counts, warm: 25, meas: 15, noPark: Array.from(NP.pk), flow: { ow: Array.from(net.ow), fl: Array.from(net.fl), cl: Array.from(net.cl) } });
   }
 }
 function advProgress() {
@@ -1207,7 +1222,7 @@ async function init() {
   { const sr = $('scaleRange'); sr.value = Math.round(100 * requestedTotal() / TODAY_TOTAL); $('scaleOut').textContent = sr.value + ' %'; }
   fitView();
   updateYearUI(); clkUI();
-  bootBackend({ cmd: 'init', raw, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: paramsMsg(), counts: Array.from(counts), noPark: Array.from(NP.pk), flow: { ow: Array.from(net.ow), fl: Array.from(net.fl) } });
+  bootBackend({ cmd: 'init', raw, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: paramsMsg(), counts: Array.from(counts), noPark: Array.from(NP.pk), flow: { ow: Array.from(net.ow), fl: Array.from(net.fl), cl: Array.from(net.cl) } });
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(raf);
 }
 

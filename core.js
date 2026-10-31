@@ -142,7 +142,7 @@ GM.createRunner = function createRunner(post) {
     poseAt(e, s, parkHeading(e, side), side * lat);
   }
   // No-parking kerbs: net.pk[e] bit 1 = left kerb closed, bit 2 = right kerb closed (left of the edge's forward direction).
-  const isBanned = (e, side) => (net.pk[e] & (side > 0 ? 1 : 2)) !== 0;
+  const isBanned = (e, side) => net.cl[e] === 1 || (net.pk[e] & (side > 0 ? 1 : 2)) !== 0;
   let banScan = false;
   function setNoPark(mask) {
     if (!net || !mask || mask.length !== net.E) return;
@@ -150,7 +150,20 @@ GM.createRunner = function createRunner(post) {
   }
   // Street directions changed while vehicles are on the street. Positions never move; vehicles on a changed street
   // are turned to the new legal direction and everybody's planned next street is re-chosen.
-  function setStreets(ow, fl, mask) {
+  function setClosedStreets(cl) {
+    const ch = GM.setClosed(net, cl);
+    if (!ch.length) return;
+    const rm = [];
+    for (let i = 0; i < nv; i++) {
+      if (net.cl[ve[i]]) {                                              // vehicle on a street that just closed: set it down elsewhere
+        const wasParked = vparked[i]; vparked[i] = 0;
+        if (!relocate(i)) rm.push(i); else if (wasParked) vpg[i] = pgen;
+      } else if (vnx[i] >= 0 && net.cl[vnx[i]]) vnx[i] = pickNext(vdir[i] === 1 ? net.v[ve[i]] : net.u[ve[i]], ve[i]);
+    }
+    if (rm.length) { rm.sort((a, b) => b - a); for (const i of rm) { const last = nv - 1; if (i !== last) copyVeh(i, last); nv--; } }
+    rebuildGrid(); retryAt = 0; retryGap = 1000; dirty = true; covStale = true;
+  }
+  function setStreets(ow, fl, mask, cl) {
     if (!net || !ow || ow.length !== net.E) return;
     const flipped = new Uint8Array(net.E), owWas = new Uint8Array(net.E);
     let any = false;
@@ -182,6 +195,7 @@ GM.createRunner = function createRunner(post) {
       dirty = true; covStale = true;
     }
     if (mask) setNoPark(mask);
+    if (cl) setClosedStreets(cl);
   }
   const ROWS1 = [0], ROWS2 = [1, 2];
   const rowsFor = (t) => ROWS1;   // one row only: a single vehicle deep along each kerb (ROWS2 = old two-row motorcycle parking)
@@ -290,7 +304,7 @@ GM.createRunner = function createRunner(post) {
     } else {
       let ok = false;
       for (let k = 0; k < PHYS.tries && !ok; k++) {
-        e = sampleEdge(); const zb = stopDist(e); sPos = zb + Math.random() * (net.len[e] - 2 * zb);   // never inside a junction box
+        e = sampleEdge(); if (net.cl[e]) continue; const zb = stopDist(e); sPos = zb + Math.random() * (net.len[e] - 2 * zb);   // never inside a junction box
         const oneWay = net.ow[e] === 1;
         dir = oneWay ? 1 : (Math.random() < 0.5 ? 1 : -1);               // one-way: only the legal direction
         lane = oneWay ? (Math.random() < 0.5 ? 1 : -1) : dir;           // one-way: either half; two-way: keep left
@@ -550,7 +564,8 @@ GM.createRunner = function createRunner(post) {
   function relocate(i) {
     const t = vtype[i];
     for (let k = 0; k < PHYS.tries; k++) {
-      const e = sampleEdge(), zb = stopDist(e), s = zb + Math.random() * (net.len[e] - 2 * zb);
+      const e = sampleEdge(); if (net.cl[e]) continue;
+      const zb = stopDist(e), s = zb + Math.random() * (net.len[e] - 2 * zb);
       const dir = net.ow[e] ? 1 : (Math.random() < 0.5 ? 1 : -1);
       const lane = net.ow[e] ? (Math.random() < 0.5 ? 1 : -1) : dir;
       const lat = lane * (0.05 + Math.random() * 0.9);
@@ -831,7 +846,7 @@ GM.createRunner = function createRunner(post) {
   function setupNet(m) {
     net = GM.prepareNetwork(m.raw);
     GM.applyRoadArea(net, P.areaKm2);
-    if (m.flow && m.flow.ow && m.flow.ow.length === net.E) { GM.applyFlow(net, m.flow.ow, m.flow.fl); }
+    if (m.flow && m.flow.ow && m.flow.ow.length === net.E) { GM.applyFlow(net, m.flow.ow, m.flow.fl); if (m.flow.cl) GM.setClosed(net, m.flow.cl); }
     net.pk = new Uint8Array(net.E); if (m.noPark && m.noPark.length === net.E) net.pk.set(m.noPark);
     net.occ = new Float32Array(net.E); net.spdF = new Float32Array(net.E).fill(1);
     net.eb = new Float32Array(net.E); net.ep = new Float32Array(net.E);      // per-street waiting / presence (vehicle-seconds) for hotspot ranking
@@ -853,7 +868,7 @@ GM.createRunner = function createRunner(post) {
         case 'init': init(m); break;
         case 'params': applyParams(m.p); break;
         case 'noPark': setNoPark(m.mask); break;
-        case 'streets': setStreets(m.ow, m.fl, m.mask); break;
+        case 'streets': setStreets(m.ow, m.fl, m.mask, m.cl); break;
         case 'counts': pendCounts = m.counts; break;                // latest wins; applied at the next loop iteration
         case 'dims': setDims(m.dims); updateRmax(); layoutAt = nowMs(); dirty = true; break;
         case 'scenario': runScenario(m); break;

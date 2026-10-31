@@ -103,6 +103,7 @@ GM.prepareNetwork = function prepareNetwork(raw) {
   // adjacency (edge ids per node) for choosing the next street at a junction.
   // It lists the streets a vehicle may ENTER at that node: a two-way street at both of its ends,
   // a one-way street only at its start (u), so nobody can be routed into a one-way street against its direction.
+  net.cl = new Uint8Array(E);          // 1 = closed to all traffic (nobody drives, parks or is placed there)
   net.fl = new Uint8Array(E);          // 1 = this street's drawing direction was reversed by the user (see GM.applyFlow)
   net.ow0 = net.ow.slice();            // one-way flags as loaded from the file
   GM.buildAdj(net);
@@ -113,12 +114,19 @@ GM.prepareNetwork = function prepareNetwork(raw) {
 GM.buildAdj = function buildAdj(net) {
   const E = net.E, N = net.N;
   const deg = new Int32Array(N + 1);
-  for (let i = 0; i < E; i++) { deg[net.u[i] + 1]++; if (!net.ow[i]) deg[net.v[i] + 1]++; }
+  for (let i = 0; i < E; i++) { if (net.cl[i]) continue; deg[net.u[i] + 1]++; if (!net.ow[i]) deg[net.v[i] + 1]++; }
   for (let i = 0; i < N; i++) deg[i + 1] += deg[i];
   net.adjOff = deg.slice();
   net.adjE = new Int32Array(deg[N]);
   const fill = deg.slice(0, N);
-  for (let i = 0; i < E; i++) { net.adjE[fill[net.u[i]]++] = i; if (!net.ow[i]) net.adjE[fill[net.v[i]]++] = i; }
+  for (let i = 0; i < E; i++) { if (net.cl[i]) continue; net.adjE[fill[net.u[i]]++] = i; if (!net.ow[i]) net.adjE[fill[net.v[i]]++] = i; }
+};
+/* Close / open streets to all traffic: cl[e] = 1 closed. Returns the edges whose state changed. */
+GM.setClosed = function setClosed(net, cl) {
+  const ch = [];
+  for (let e = 0; e < net.E; e++) { const c = cl && cl[e] ? 1 : 0; if (c !== net.cl[e]) { net.cl[e] = c; ch.push(e); } }
+  if (ch.length) GM.buildAdj(net);
+  return ch;
 };
 
 /* Street directions that can be changed on the fly. ow[e] = 1 one-way (legal direction u -> v), 0 two-way;
