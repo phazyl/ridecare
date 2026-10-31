@@ -19,7 +19,7 @@ const { TYPES, MAX_VEHICLES } = GM;
  * 1. CONFIG
  * ===================================================================== */
 const AREA = { min: 0.80, max: 1.00, step: 0.001, osmnx: 0.894, report: 0.902 };
-const DEFAULTS = { parkShare: 89, parkStrip: 2.3, jam: 0.50, patience: 5, simSpeed: 10, dotPx: 2 };
+const DEFAULTS = { parkShare: 89, parkStrip: 2.3, jam: 0.50, patience: 5, simSpeed: 1, dotPx: 2 };
 const TODAY_TOTAL = 119093; // Table 3 = the 2024 baseline fleet
 const COL = { beta: 1.5, secPerDay: 20, share: 0.8, baseAcc: 2882, baseFleet: 119093 };
 
@@ -353,7 +353,7 @@ function updateYearUI() {
  *   Figures come from the IUM report (Tables 30, 31); the curve shape between the report's peak windows is an assumption.
  * ===================================================================== */
 const DAYN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const CLK = { on: true, day: 1, min: 465, play: false, spdH: 2, curves: null, last: 0, lastPush: 0, usage: null };
+const CLK = { on: true, live: true, day: 1, min: 465, play: false, spdH: 2, curves: null, last: 0, lastPush: 0, liveT: 0, usage: null };
 const dayKey = (d) => { const dt = CLK.usage.day_types; return Object.keys(dt).find((k) => dt[k].days.includes(d)) || 'weekday'; };
 
 function clkBuild(usage) {
@@ -385,7 +385,16 @@ function clkPeak(t) { const p = CLK.usage.peak_share; const v = p.by_type[TYPES[
 const clkMoveShare = (t) => Math.min(1, clkPeak(t) * clkLevel());
 function clkParkArr() { return clkOn() ? TYPES.map((_, t) => 1 - clkMoveShare(t)) : null; }
 const clkExposure = () => (clkOn() ? clkLevel() / clkCurve().mean : 1);
-const clkSecPerDay = () => (clkOn() && CLK.play ? 24 * CLK.spdH : state.secPerDay);
+const clkSecPerDay = () => (clkOn() && CLK.play ? 24 * CLK.spdH : clkOn() && CLK.live ? 86400 / Math.max(1, state.simSpeed) : state.secPerDay);
+// Current day and time in the Maldives (UTC+5, no daylight saving)
+function mvNow() {
+  try {
+    const p = {}; new Intl.DateTimeFormat('en-US', { timeZone: 'Indian/Maldives', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date()).forEach((x) => { p[x.type] = x.value; });
+    const d = DAYN.indexOf(p.weekday); if (d >= 0) return { day: d, min: (parseInt(p.hour, 10) % 24) * 60 + parseInt(p.minute, 10) };
+  } catch (err) { /* fall through */ }
+  const t = new Date(Date.now() + 5 * 3600e3); return { day: t.getUTCDay(), min: t.getUTCHours() * 60 + t.getUTCMinutes() };
+}
+function clkSyncLive() { const n = mvNow(), ch = n.day !== CLK.day || Math.floor(n.min) !== Math.floor(CLK.min); CLK.day = n.day; CLK.min = n.min; return ch; }
 function clkTotals() {
   let tot = 0, mv = 0;
   for (let t = 0; t < nT; t++) { tot += counts[t]; mv += counts[t] * (clkOn() ? clkMoveShare(t) : 1 - state.parkShare); }
@@ -423,10 +432,11 @@ function clkUI() {
   $('clkRange').value = Math.floor(CLK.min);
   $('clkOut').textContent = clkFmtTime(CLK.min);
   $('clkPlay').textContent = CLK.play ? '❚❚ Pause clock' : '▶ Play day';
+  $('clkLive').classList.toggle('on', CLK.live);
   const T = clkTotals(), pc = (x) => (T.tot ? (100 * x / T.tot).toFixed(1) : '0') + ' %';
   if (on) {
     $('parkOut').textContent = pc(T.pk); $('parkRange').value = Math.round(100 * (T.tot ? T.pk / T.tot : 0));
-    $('clkRead').innerHTML = `<b>${DAYN[CLK.day]} ${clkFmtTime(CLK.min)}</b> · ${clkPeriod()}<br>` +
+    $('clkRead').innerHTML = `<b>${DAYN[CLK.day]} ${clkFmtTime(CLK.min)}</b>${CLK.live ? ' <span style="color:#3fb950">● live, Maldives time</span>' : ''} · ${clkPeriod()}<br>` +
       `<span style="color:#3fb950">${fmt(T.mv)} moving (${pc(T.mv)})</span> · <span style="color:#e3a008">${fmt(T.pk)} parked (${pc(T.pk)})</span>`;
     const dk = dayKey(CLK.day), rep = CLK.usage.report_figures;
     $('clkNote').textContent = `Report: ${fmt(rep.hourly_total)} vehicles active in a peak hour (${(100 * CLK.usage.peak_share.default).toFixed(1)} % of the fleet), ${fmt(rep.daily_total)} per day. ` +
@@ -436,6 +446,7 @@ function clkUI() {
 }
 function clkApply(push) { clkUI(); if (push) { CLK.lastPush = now(); pushParams(); } }
 function clkTick(t) {
+  if (CLK.live && clkOn() && t - CLK.liveT > 5000) { CLK.liveT = t; if (clkSyncLive()) clkApply(true); }
   if (!CLK.play || !clkOn() || state.paused) { CLK.last = t; return; }
   const dt = Math.min(0.25, (t - CLK.last) / 1000); CLK.last = t;
   CLK.min += dt * 60 / CLK.spdH;
@@ -447,14 +458,15 @@ function clkBind() {
   const chips = $('dayChips');
   DAYN.forEach((n, i) => {
     const b = document.createElement('button'); b.textContent = n; b.className = (dayKey(i) !== 'weekday') ? 'we' : '';
-    b.addEventListener('click', () => { CLK.day = i; clkApply(true); }); chips.appendChild(b);
+    b.addEventListener('click', () => { CLK.live = false; CLK.day = i; clkApply(true); }); chips.appendChild(b);
   });
   $('clkOn').addEventListener('change', (ev) => { CLK.on = ev.target.checked; if (!CLK.on) CLK.play = false; clkApply(true); });
-  $('clkRange').addEventListener('input', (ev) => { CLK.min = +ev.target.value; clkApply(true); });
-  $('clkPlay').addEventListener('click', () => { CLK.play = !CLK.play; CLK.last = now(); clkApply(true); });
+  $('clkRange').addEventListener('input', (ev) => { CLK.live = false; CLK.min = +ev.target.value; clkApply(true); });
+  $('clkLive').addEventListener('click', () => { CLK.live = true; CLK.play = false; clkSyncLive(); clkApply(true); });
+  $('clkPlay').addEventListener('click', () => { CLK.live = false; CLK.play = !CLK.play; CLK.last = now(); clkApply(true); });
   $('clkSpd').addEventListener('change', (ev) => { CLK.spdH = +ev.target.value; pushParams(); });
   const cv = $('clkCv'); let drag = false;
-  const at = (ev) => { const r = cv.getBoundingClientRect(); CLK.min = Math.max(0, Math.min(1439, Math.round((ev.clientX - r.left) / r.width * 1440 / 5) * 5)); clkApply(true); };
+  const at = (ev) => { CLK.live = false; const r = cv.getBoundingClientRect(); CLK.min = Math.max(0, Math.min(1439, Math.round((ev.clientX - r.left) / r.width * 1440 / 5) * 5)); clkApply(true); };
   cv.addEventListener('pointerdown', (ev) => { drag = true; try { cv.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ } at(ev); });
   cv.addEventListener('pointermove', (ev) => { if (drag) at(ev); });
   cv.addEventListener('pointerup', () => { drag = false; });
@@ -468,7 +480,7 @@ function clkBind() {
  *   Default: Boduthakurufaanu Magu (OSM also uses this name for the Malé-Hulhumalé bridge) and the bridge itself are closed on both kerbs.
  *   The rules are kept in this browser (localStorage) and are tied to the network file they were made for.
  * ===================================================================== */
-const NP = { names: ['Boduthakurufaanu Magu', 'Sinamalé Bridge'], pk: null, list: [], sel: null, all: false, key: 'gm_nopark_v1' };
+const NP = { names: ['Boduthakurufaanu Magu', 'Sinamalé Bridge'], pk: null, list: [], sel: null, all: false, key: 'gm_streets_v2' };
 const npName = (e) => (net.nm[e] >= 0 ? net.names[net.nm[e]] : null);
 function npDefault() {
   const pk = new Uint8Array(net.E), ids = NP.names.map((n) => net.names.indexOf(n)).filter((i) => i >= 0), ends = [];
@@ -479,17 +491,27 @@ function npDefault() {
   for (let e = 0; e < net.E; e++) if (!pk[e] && net.len[e] > 1000 && endPts(e).every(near)) pk[e] = 3;
   return pk;
 }
+const npGen = () => rawNetwork && rawNetwork.meta && rawNetwork.meta.generated;
+function npStored() {
+  try { const o = JSON.parse(localStorage.getItem(NP.key) || 'null'); if (o && o.n === net.E && o.gen === npGen()) return o; } catch (err) { /* storage unavailable */ }
+  return null;
+}
+function npLoadFlow() {                                    // street directions saved in this browser (applied before kerb rules)
+  const o = npStored(); if (!o || !Array.isArray(o.f)) return;
+  const ow = net.ow.slice(), fl = net.fl.slice();
+  for (const [e, a, f] of o.f) if (e >= 0 && e < net.E) { ow[e] = a ? 1 : 0; fl[e] = f ? 1 : 0; }
+  GM.applyFlow(net, ow, fl);
+}
 function npLoad() {
-  try {
-    const o = JSON.parse(localStorage.getItem(NP.key) || 'null'), gen = rawNetwork && rawNetwork.meta && rawNetwork.meta.generated;
-    if (o && o.n === net.E && o.gen === gen && Array.isArray(o.b)) { const pk = new Uint8Array(net.E); for (const [e, m] of o.b) if (e >= 0 && e < net.E) pk[e] = m & 3; return pk; }
-  } catch (err) { /* storage unavailable: use the default */ }
+  const o = npStored();
+  if (o && Array.isArray(o.b)) { const pk = new Uint8Array(net.E); for (const [e, m] of o.b) if (e >= 0 && e < net.E) pk[e] = m & 3; return pk; }
   return npDefault();
 }
 function npSave() {
   try {
-    const b = []; for (let e = 0; e < net.E; e++) if (NP.pk[e]) b.push([e, NP.pk[e]]);
-    localStorage.setItem(NP.key, JSON.stringify({ gen: rawNetwork && rawNetwork.meta && rawNetwork.meta.generated, n: net.E, b }));
+    const b = [], f = [];
+    for (let e = 0; e < net.E; e++) { if (NP.pk[e]) b.push([e, NP.pk[e]]); if (net.ow[e] !== net.ow0[e] || net.fl[e]) f.push([e, net.ow[e], net.fl[e]]); }
+    localStorage.setItem(NP.key, JSON.stringify({ gen: npGen(), n: net.E, b, f }));
   } catch (err) { /* ignore */ }
 }
 const pushNp = () => { if (sim && NP.pk) sim.post({ cmd: 'noPark', mask: Array.from(NP.pk) }); };
@@ -503,8 +525,37 @@ function npRefresh(push) {
   $('npSummary').textContent = NP.list.length
     ? NP.list.length + ' street segments restricted · ' + (closed / 1000).toFixed(1) + ' km of kerb closed (' + (100 * closed / all).toFixed(1) + ' % of all kerb)'
     : 'Parking is allowed on every street.';
-  npUpdateSel(); needDraw = true;
+  dirSummary(); npUpdateSel(); needDraw = true;
   if (push) { npSave(); pushNp(); }
+}
+function dirSummary() {
+  let ow = 0, tw = 0, edited = 0, trap = 0;
+  const inc = new Uint8Array(net.N);
+  for (let e = 0; e < net.E; e++) { if (net.ow[e]) { ow++; inc[net.v[e]] = 1; } else { tw++; inc[net.u[e]] = 1; inc[net.v[e]] = 1; } if (net.ow[e] !== net.ow0[e] || net.fl[e]) edited++; }
+  for (let e = 0; e < net.E; e++) if (net.ow[e]) { const v = net.v[e]; if (net.adjOff[v + 1] === net.adjOff[v]) trap++; else if (!inc[net.u[e]]) trap++; }
+  $('dirSummary').innerHTML = `${ow} one-way and ${tw} two-way segments` + (edited ? ` · <b>${edited} changed by you</b>` : '') +
+    (trap ? `<br><span style="color:#e3a008">⚠ ${trap} one-way segment${trap === 1 ? '' : 's'} lead into a dead end or cannot be entered; vehicles there wait and are then relocated.</span>` : '');
+}
+const COMP = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
+function origVec(e) {                                       // direction of the street as in the file (u -> v), in map coordinates
+  const o = net.off[e], q = net.off[e + 1] - 1, s = net.fl[e] ? -1 : 1;
+  return [s * (net.px[q] - net.px[o]), s * (net.py[q] - net.py[o])];
+}
+const compass = (v) => COMP[Math.round(((Math.atan2(v[0], v[1]) * 180 / Math.PI + 360) % 360) / 45) % 8];
+function setDirection(mode) {                              // 0 two-way, 1 one-way along the file's direction, 2 against it
+  if (NP.sel == null) return;
+  const ow = net.ow.slice(), fl = net.fl.slice(), D = origVec(NP.sel).map((x) => (mode === 2 ? -x : x));
+  for (const e of npSelEdges()) {
+    if (mode === 0) { ow[e] = 0; continue; }
+    const v = origVec(e); ow[e] = 1; fl[e] = v[0] * D[0] + v[1] * D[1] >= 0 ? 0 : 1;
+  }
+  applyStreets(ow, fl);
+}
+function applyStreets(ow, fl) {
+  for (let e = 0; e < net.E; e++) if ((fl[e] ? 1 : 0) !== net.fl[e]) { const m = NP.pk[e]; NP.pk[e] = ((m & 1) << 1) | ((m >> 1) & 1); }   // same physical kerb after a reversal
+  GM.applyFlow(net, ow, fl);
+  if (sim) sim.post({ cmd: 'streets', ow: Array.from(ow), fl: Array.from(fl), mask: Array.from(NP.pk) });
+  npRefresh(false); npSave();
 }
 function npSelEdges() {
   if (NP.sel == null) return [];
@@ -520,6 +571,9 @@ function npUpdateSel() {
   const e = NP.sel, nm = npName(e), edges = npSelEdges(); let len = 0; for (const k of edges) len += net.len[k];
   $('npSelName').textContent = nm || 'Unnamed street';
   $('npSelInfo').textContent = edges.length + ' segment' + (edges.length === 1 ? '' : 's') + ' · ' + Math.round(len) + ' m · ' + net.ewS[e].toFixed(1) + ' m wide' + (net.ow[e] ? ' · one-way' : ' · two-way');
+  const dv = origVec(e), A = compass(dv), B = compass([-dv[0], -dv[1]]), ds = $('dirSel');
+  ds.options[1].textContent = 'One-way, towards ' + A; ds.options[2].textContent = 'One-way, towards ' + B;
+  ds.value = net.ow[e] ? (net.fl[e] ? '2' : '1') : '0';
   $('npL').checked = !(NP.pk[e] & 1); $('npR').checked = !(NP.pk[e] & 2);
   let same = 0; if (nm) for (let k = 0; k < net.E; k++) if (net.nm[k] === net.nm[e]) same++;
   $('npAll').checked = NP.all && same > 0; $('npAll').disabled = !nm || same < 2;
@@ -572,9 +626,25 @@ function drawNp(sc, cx, cy, hw, hh) {
     edge(e, 1, '#ffa62b', 2.5, []); edge(e, -1, '#3fe0ff', 2.5, []);
   }
   ctx.setLineDash([]);
+  for (const e of npSelEdges()) {                                   // arrows along a one-way street (direction of travel)
+    if (!net.ow[e] || !vis(e)) continue;
+    ctx.fillStyle = '#ffffff';
+    let acc = 0;
+    for (let k = net.off[e]; k < net.off[e + 1] - 1; k++) {
+      const [x0, y0] = P(k), [x1, y1] = P(k + 1), l = Math.hypot(x1 - x0, y1 - y0); if (l < 1e-3) continue;
+      const ux = (x1 - x0) / l, uy = (y1 - y0) / l, step = 46, sz = 6;
+      for (let d = step - acc; d < l; d += step) {
+        const X = x0 + ux * d, Y = y0 + uy * d;
+        ctx.beginPath(); ctx.moveTo(X + ux * sz, Y + uy * sz); ctx.lineTo(X - ux * sz - uy * sz * 0.8, Y - uy * sz + ux * sz * 0.8); ctx.lineTo(X - ux * sz + uy * sz * 0.8, Y - uy * sz - ux * sz * 0.8); ctx.closePath(); ctx.fill();
+      }
+      acc = (acc + l) % step;
+    }
+  }
 }
 function npBind() {
   const dl = $('npNames'); net.names.forEach((n) => { const o = document.createElement('option'); o.value = n; dl.appendChild(o); });
+  $('dirSel').addEventListener('change', (ev) => setDirection(parseInt(ev.target.value, 10)));
+  $('dirReset').addEventListener('click', () => { applyStreets(net.ow0, new Uint8Array(net.E)); });
   $('npL').addEventListener('change', (ev) => npSetSide(1, ev.target.checked));
   $('npR').addEventListener('change', (ev) => npSetSide(2, ev.target.checked));
   $('npAll').addEventListener('change', (ev) => { NP.all = ev.target.checked; npUpdateSel(); needDraw = true; });
@@ -1007,7 +1077,7 @@ function advPump() {
     };
     w.onerror = () => advFail('a test worker failed to start');
     const P = Object.assign(paramsMsg().P, d.P);
-    w.postMessage({ cmd: 'scenario', id: d.id, raw: rawNetwork, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: { P }, counts: d.counts, warm: 25, meas: 15, noPark: Array.from(NP.pk) });
+    w.postMessage({ cmd: 'scenario', id: d.id, raw: rawNetwork, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: { P }, counts: d.counts, warm: 25, meas: 15, noPark: Array.from(NP.pk), flow: { ow: Array.from(net.ow), fl: Array.from(net.fl) } });
   }
 }
 function advProgress() {
@@ -1116,26 +1186,28 @@ async function init() {
   }
   net = GM.prepareNetwork(raw);
   GM.applyRoadArea(net, state.areaKm2);
-  NP.pk = npLoad(); npBind(); npRefresh(false);
+  npLoadFlow(); NP.pk = npLoad(); npBind(); npRefresh(false);
 
   yearsCfg = years;
   if (yearsCfg) {
     fit = computeFit();
     const yr = $('yearRange');
     yr.min = yearsCfg.years[0]; yr.max = yearsCfg.years[yearsCfg.years.length - 1]; yr.step = 1;
-    state.year = yearsCfg.baseline.year;
+    state.year = yearsCfg.years.includes(2026) ? 2026 : yearsCfg.baseline.year;   // default: the current year
     const sh = yearsCfg.accidents.greater_male_share; if (sh > 0) { state.share = sh; $('shareNum').value = Math.round(sh * 100); }
     state.beta = yearsCfg.model.beta_default || COL.beta; $('betaRange').value = state.beta;
   } else { $('yearRange').disabled = true; }
-  if (yearsCfg && yearsCfg.usage && yearsCfg.usage.day_types) { clkBuild(yearsCfg.usage); clkBind(); }
+  if (yearsCfg && yearsCfg.usage && yearsCfg.usage.day_types) { clkBuild(yearsCfg.usage); clkBind(); clkSyncLive(); }
   else { CLK.on = false; $('clkOn').checked = false; $('clkOn').disabled = true; $('clkNote').textContent = 'data/years.json has no "usage" block: time of day is unavailable.'; }
   { const L = $('yearTicksLbl'); if (yearsCfg) yearsCfg.years.forEach((y) => { const s = document.createElement('span'); s.textContent = y; L.appendChild(s); }); }
 
-  TYPES.forEach((t, i) => { counts[i] = t.count; });
+  if (yearsCfg) { const yi = yearsCfg.years.indexOf(state.year); fleetForYearIdx(yi).forEach((n, i) => { counts[i] = n; }); }
+  else TYPES.forEach((t, i) => { counts[i] = t.count; });
   syncTypeInputs();
+  { const sr = $('scaleRange'); sr.value = Math.round(100 * requestedTotal() / TODAY_TOTAL); $('scaleOut').textContent = sr.value + ' %'; }
   fitView();
   updateYearUI(); clkUI();
-  bootBackend({ cmd: 'init', raw, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: paramsMsg(), counts: Array.from(counts), noPark: Array.from(NP.pk) });
+  bootBackend({ cmd: 'init', raw, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: paramsMsg(), counts: Array.from(counts), noPark: Array.from(NP.pk), flow: { ow: Array.from(net.ow), fl: Array.from(net.fl) } });
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(raf);
 }
 

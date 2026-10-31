@@ -81,6 +81,7 @@
   .chips{display:flex;gap:4px;margin:4px 0 8px}
   .chips button{flex:1;padding:6px 0;font-size:12px}
   .chips button.we{border-style:dashed}
+  #clkLive.on{background:var(--ok);color:#0d1117;border-color:var(--ok);font-weight:700}
   .chips button.on{background:var(--acc);color:#0d1117;border-color:var(--acc);font-weight:700}
   #clkCv{width:100%;height:90px;display:block;background:var(--bg);border:1px solid var(--line);border-radius:6px;touch-action:none;cursor:pointer}
   .clkread{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin:6px 0;font-size:13px}
@@ -148,6 +149,26 @@
     <div class="note">Geometric ceiling = packing limit × road area ÷ mean vehicle footprint. It is a space limit, not a traffic-flow capacity. Every vehicle is placed with an overlap check and only moves into free space, so vehicles never overlap; whatever does not fit is reported under “Placement”. The simulation runs in a background worker. If the device cannot keep up, the “Simulation rate” falls below the selected speed instead of the page freezing. This is a simplified model, not a calibrated traffic forecast.</div>
     </section>
     <section class="sec">
+    <h3>Street editor · directions &amp; parking</h3>
+    <input type="search" id="npSearch" list="npNames" placeholder="Find a street by name…" style="width:100%">
+    <datalist id="npNames"></datalist>
+    <div class="note">Or click a street on the map. Changes apply at once; vehicles on a changed street turn to the new direction.</div>
+    <div id="npSel" hidden>
+      <div class="line" style="margin-bottom:0"><b id="npSelName"></b><button id="npSelX" title="Deselect">✕</button></div>
+      <div class="note" id="npSelInfo" style="margin-top:2px"></div>
+      <div class="line"><label for="dirSel"><b>Direction of traffic</b></label></div>
+      <select id="dirSel" style="width:100%"><option value="0">Two-way</option><option value="1"></option><option value="2"></option></select>
+      <label class="chk"><input type="checkbox" id="npAll"> <span id="npAllTxt">Apply to every segment with this name</span></label>
+      <div class="line"><label><b>Parking</b></label></div>
+      <label class="chk"><input type="checkbox" id="npL" checked> <span style="color:#ffa62b">Left kerb</span>: parking allowed</label>
+      <label class="chk"><input type="checkbox" id="npR" checked> <span style="color:#3fe0ff">Right kerb</span>: parking allowed</label>
+    </div>
+    <div class="note" id="dirSummary"></div>
+    <div class="note" id="npSummary"></div>
+    <div class="line"><button id="dirReset" title="Directions as in OpenStreetMap">Original directions</button><button id="npReset" title="Boduthakurufaanu Magu ring road and the Malé–Hulhumalé bridge">Default parking</button><button id="npClear">Allow all parking</button></div>
+    <div class="note">Red dashes on the map = closed kerbs; arrows on the selected street = direction of travel.</div>
+    </section>
+    <section class="sec">
 <h3>Traffic advisor</h3>
     <div class="advlevel"><span class="chip" id="advChip">–</span><span id="advHead" class="note" style="margin:0"></span></div>
     <label class="chk"><input type="checkbox" id="hotChk" checked> Mark hotspots on the map</label>
@@ -175,7 +196,7 @@
       <div class="line"><label>3 · Time</label><output id="clkOut">07:45</output></div>
       <canvas id="clkCv" height="90"></canvas>
       <input type="range" id="clkRange" min="0" max="1439" step="5" value="465">
-      <div class="line"><button id="clkPlay">▶ Play day</button><span class="mut">1 hour =</span>
+      <div class="line"><button id="clkLive" title="Follow the real day and time in the Maldives">● Live</button><button id="clkPlay">▶ Play day</button><span class="mut">1 hour =</span>
         <select id="clkSpd"><option value="1">1 s</option><option value="2" selected>2 s</option><option value="5">5 s</option><option value="10">10 s</option></select></div>
       <div id="clkRead" class="clkread"></div>
       <div class="note" id="clkNote"></div>
@@ -194,7 +215,7 @@
     <div class="note" style="margin-top:0">Presets and the slider scale the whole fleet at today’s mix. Edit single types below.</div>
     <div class="note" id="shapeNote"><b>Legend.</b> Each swatch shows the type’s colour and its true proportions (length × width). Zoomed out, every vehicle is drawn as a dot in that colour, enlarged so it stays visible. Zoom in past about 3 px per metre and vehicles become true-size rectangles pointing the way they drive. Parked vehicles are drawn paler.</div>
     <div class="btns" id="presets"></div>
-    <div class="line" style="margin-top:10px"><label for="scaleRange">Scale whole fleet (today's mix)</label><output id="scaleOut">100 %</output></div>
+    <div class="line" style="margin-top:10px"><label for="scaleRange">Fleet size vs 2024 report fleet (119,093 = 100 %)</label><output id="scaleOut">100 %</output></div>
     <input type="range" id="scaleRange" min="0" max="200" step="1" value="100">
     <div id="types"></div>
     <details id="otherWrap" style="margin-top:8px"><summary id="otherSum">Other vehicle types</summary><div id="typesOther"></div></details>
@@ -204,18 +225,6 @@
     <div class="line"><label for="parkRange" id="parkLbl">Share of vehicles parked</label><output id="parkOut">89 %</output></div>
     <input type="range" id="parkRange" min="0" max="100" step="1" value="89">
     <div class="line"><label for="stripNum">Kerbside parking strip (m per side)</label><input type="number" id="stripNum" min="0.5" max="4" step="0.1" value="2.3" style="width:70px"></div>
-    <div class="line" style="margin-top:10px"><label><b>No-parking streets</b></label><button id="npReset" title="Boduthakurufaanu Magu ring road and the Malé–Hulhumalé bridge">Default</button><button id="npClear">Allow all</button></div>
-    <div class="note" id="npSummary"></div>
-    <input type="search" id="npSearch" list="npNames" placeholder="Find a street by name…" style="width:100%">
-    <datalist id="npNames"></datalist>
-    <div class="note">Or click a street on the map. Red dashes on the map show closed kerbs. Parked vehicles only stand on the kerbs that stay open.</div>
-    <div id="npSel" hidden>
-      <div class="line" style="margin-bottom:0"><b id="npSelName"></b><button id="npSelX" title="Deselect">✕</button></div>
-      <div class="note" id="npSelInfo" style="margin-top:2px"></div>
-      <label class="chk"><input type="checkbox" id="npL" checked> <span style="color:#ffa62b">Left kerb</span>: parking allowed</label>
-      <label class="chk"><input type="checkbox" id="npR" checked> <span style="color:#3fe0ff">Right kerb</span>: parking allowed</label>
-      <label class="chk"><input type="checkbox" id="npAll"> <span id="npAllTxt">Apply to every segment with this name</span></label>
-    </div>
     <div class="line"><label for="patRange">Gridlock breaker: relocate after waiting</label><output id="patOut">5 s</output></div>
     <input type="range" id="patRange" min="0" max="60" step="1" value="5">
     <div class="line"><label for="jamRange">Packing limit (coverage at jam)</label><output id="jamOut">50 %</output></div>
@@ -227,7 +236,7 @@
       <div class="note" id="safeInfo"></div>
     </div>
     <div class="line"><label for="speedSel">Simulation speed</label>
-      <select id="speedSel"><option>1</option><option>5</option><option selected>10</option><option>25</option><option>50</option></select><span>×</span>
+      <select id="speedSel"><option selected>1</option><option>5</option><option>10</option><option>25</option><option>50</option></select><span>×</span>
       <button id="pauseBtn">Pause</button></div>
     <div class="line"><label for="dotRange">Min. dot size on screen</label><output id="dotOut">2.0 px</output></div>
     <input type="range" id="dotRange" min="1" max="6" step="0.5" value="2">

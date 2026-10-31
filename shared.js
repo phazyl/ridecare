@@ -103,6 +103,15 @@ GM.prepareNetwork = function prepareNetwork(raw) {
   // adjacency (edge ids per node) for choosing the next street at a junction.
   // It lists the streets a vehicle may ENTER at that node: a two-way street at both of its ends,
   // a one-way street only at its start (u), so nobody can be routed into a one-way street against its direction.
+  net.fl = new Uint8Array(E);          // 1 = this street's drawing direction was reversed by the user (see GM.applyFlow)
+  net.ow0 = net.ow.slice();            // one-way flags as loaded from the file
+  GM.buildAdj(net);
+  GM.applyRoadArea(net, 0.894);
+  return net;
+};
+
+GM.buildAdj = function buildAdj(net) {
+  const E = net.E, N = net.N;
   const deg = new Int32Array(N + 1);
   for (let i = 0; i < E; i++) { deg[net.u[i] + 1]++; if (!net.ow[i]) deg[net.v[i] + 1]++; }
   for (let i = 0; i < N; i++) deg[i + 1] += deg[i];
@@ -110,9 +119,33 @@ GM.prepareNetwork = function prepareNetwork(raw) {
   net.adjE = new Int32Array(deg[N]);
   const fill = deg.slice(0, N);
   for (let i = 0; i < E; i++) { net.adjE[fill[net.u[i]]++] = i; if (!net.ow[i]) net.adjE[fill[net.v[i]]++] = i; }
+};
 
-  GM.applyRoadArea(net, 0.894);
-  return net;
+/* Street directions that can be changed on the fly. ow[e] = 1 one-way (legal direction u -> v), 0 two-way;
+ * fl[e] = 1 means the street is drawn reversed compared with the file (so a one-way street runs the other way).
+ * Reversing swaps u and v and turns the polyline around; the edge index never changes.
+ * Returns the list of edges whose flow changed. */
+GM.applyFlow = function applyFlow(net, ow, fl) {
+  const changed = [];
+  for (let e = 0; e < net.E; e++) {
+    const o = ow[e] ? 1 : 0, f = fl[e] ? 1 : 0;
+    if (o === net.ow[e] && f === net.fl[e]) continue;
+    changed.push(e);
+    if (f !== net.fl[e]) {
+      const a = net.off[e], z = net.off[e + 1] - 1;
+      for (let i = a, j = z; i < j; i++, j--) {
+        let t = net.px[i]; net.px[i] = net.px[j]; net.px[j] = t;
+        t = net.py[i]; net.py[i] = net.py[j]; net.py[j] = t;
+      }
+      net.cum[a] = 0;
+      for (let k = a + 1; k <= z; k++) net.cum[k] = net.cum[k - 1] + Math.hypot(net.px[k] - net.px[k - 1], net.py[k] - net.py[k - 1]);
+      const t = net.u[e]; net.u[e] = net.v[e]; net.v[e] = t;
+      net.fl[e] = f;
+    }
+    net.ow[e] = o;
+  }
+  if (changed.length) GM.buildAdj(net);
+  return changed;
 };
 
 GM.applyRoadArea = function applyRoadArea(net, areaKm2) {

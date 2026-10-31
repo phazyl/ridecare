@@ -148,6 +148,41 @@ GM.createRunner = function createRunner(post) {
     if (!net || !mask || mask.length !== net.E) return;
     net.pk.set(mask); banScan = true; dirty = true;
   }
+  // Street directions changed while vehicles are on the street. Positions never move; vehicles on a changed street
+  // are turned to the new legal direction and everybody's planned next street is re-chosen.
+  function setStreets(ow, fl, mask) {
+    if (!net || !ow || ow.length !== net.E) return;
+    const flipped = new Uint8Array(net.E), owWas = new Uint8Array(net.E);
+    let any = false;
+    for (let e = 0; e < net.E; e++) {
+      if ((fl[e] ? 1 : 0) !== net.fl[e]) flipped[e] = 1;
+      owWas[e] = net.ow[e];
+      if (flipped[e] || (ow[e] ? 1 : 0) !== net.ow[e]) any = true;
+    }
+    if (any) {
+      for (let i = 0; i < nv; i++) {                                   // street reversed: same place, mirrored coordinates
+        const e = ve[i]; if (!flipped[e]) continue;
+        vs[i] = net.len[e] - vs[i]; vdir[i] = -vdir[i]; vside[i] = -vside[i];
+        if (!vparked[i]) { vlat[i] = -vlat[i]; vlane[i] = -vlane[i]; }
+      }
+      const changed = GM.applyFlow(net, ow, fl);
+      for (let i = 0; i < nv; i++) {
+        const e = ve[i];
+        if (changed.indexOf(e) < 0 && vnx[i] !== -1 && changed.indexOf(vnx[i]) < 0) continue;
+        if (changed.indexOf(e) >= 0) {
+          let nd = vdir[i];
+          if (vparked[i]) nd = net.ow[e] ? 1 : vside[i];
+          else if (net.ow[e]) { nd = 1; vlane[i] = vlat[i] < 0 ? -1 : 1; vpref[i] = Math.abs(vlat[i]) || 0.55; }
+          else { nd = vdir[i]; vlane[i] = nd; vpref[i] = Math.abs(vlat[i]) || 0.55; }
+          if (nd !== vdir[i]) { vdir[i] = nd; vhx[i] = -vhx[i]; vhy[i] = -vhy[i]; }
+          vwait[i] = 0;
+        }
+        if (!vparked[i]) vnx[i] = pickNext(vdir[i] === 1 ? net.v[ve[i]] : net.u[ve[i]], ve[i]);
+      }
+      dirty = true; covStale = true;
+    }
+    if (mask) setNoPark(mask);
+  }
   const ROWS1 = [0], ROWS2 = [1, 2];
   const rowsFor = (t) => ROWS1;   // one row only: a single vehicle deep along each kerb (ROWS2 = old two-row motorcycle parking)
   let KE = 0, KS = 0, KSIDE = 1, KROW = 0;
@@ -173,6 +208,25 @@ GM.createRunner = function createRunner(post) {
     return false;
   }
 
+  // Safe spacing: is the stretch of road ahead of a moving vehicle (length g) free of vehicles travelling the same way?
+  function blockedAhead(x, y, hx, hy, t, self, g) {
+    const hl = g / 2, cx = x + hx * (HL[t] + hl), cy = y + hy * (HL[t] + hl), hw = HW[t];
+    const reach = hl + hw + RMAX + 0.5, cs = G.cs, nx = G.nx;
+    const cx0 = Math.max(0, Math.floor((cx - reach - G.x0) * G.inv)), cx1 = Math.min(nx - 1, Math.floor((cx + reach - G.x0) * G.inv));
+    const cy0 = Math.max(0, Math.floor((cy - reach - G.y0) * G.inv)), cy1 = Math.min(G.ny - 1, Math.floor((cy + reach - G.y0) * G.inv));
+    for (let gy = cy0; gy <= cy1; gy++) for (let gx = cx0; gx <= cx1; gx++) {
+      let j = G.head[gy * nx + gx];
+      while (j !== -1) {
+        if (j !== self && !vparked[j] && vhx[j] * hx + vhy[j] * hy > 0.3) {
+          const tj = vtype[j];
+          if (rectsOverlap(cx, cy, hx, hy, hl, hw, vx[j], vy[j], vhx[j], vhy[j], HL[tj], HW[tj])) return true;
+        }
+        j = gnext[j];
+      }
+    }
+    return false;
+  }
+  let curH = 0.1;     // length of the current simulation step (s), used to turn a step distance into a speed
   function rectsOverlap(ax, ay, ahx, ahy, aL, aW, bx, by, bhx, bhy, bL, bW) {
     const dx = bx - ax, dy = by - ay;
     const cs = ahx * bhx + ahy * bhy, sn = ahx * bhy - ahy * bhx;
@@ -459,6 +513,10 @@ GM.createRunner = function createRunner(post) {
     nlat = vlane[i] * Math.abs(nlat);     // keep to the left of the travel direction (one-way streets: to the chosen half)
     poseMoving(e, s, dir, nlat, t);
     if (overlapsAny(PX, PY, PHX, PHY, t, i)) return false;
+    if (P.safe && d > 0) {                                           // keep reaction + braking distance to the vehicle ahead
+      const v = d / curH, mu = Math.max(0.05, +P.mu || 0.6), g = v * Math.max(0, +P.react || 0) + v * v / (2 * mu * 9.81);
+      if (g > 0.05 && blockedAhead(PX, PY, PHX, PHY, t, i, g)) return false;
+    }
     commitPose(i, e, s, dir, nlat);
     return true;
   }
@@ -466,14 +524,19 @@ GM.createRunner = function createRunner(post) {
   // Returns the distance actually travelled (0 = waiting).
   // Tries full speed, then closing up to the vehicle ahead in smaller steps, then a sideways yield.
   function advance(i, d) {
-    const dir = vdir[i], lat0 = vlat[i], lane = vlane[i];
-    let dl = lane * vpref[i] - lat0; dl = dl > 0.2 ? 0.2 : dl < -0.2 ? -0.2 : dl;     // drift back toward own lane
+    const dir = vdir[i], lat0 = vlat[i], lane = vlane[i], tt = vtype[i];
+    // sideways speed is limited to about 0.7 m/s (a smooth drift, not a jump)
+    const half = Math.max(0.3, net.ewS[ve[i]] * 0.5 - VW[tt] * 0.5 - PHYS.gap), mx = Math.min(0.2, 0.7 * curH / half);
+    let dl = lane * vpref[i] - lat0; dl = dl > mx ? mx : dl < -mx ? -mx : dl;         // drift toward own lane position
     const nl = lat0 + dl;
     if (tryMove(i, d, nl)) return d;
     if (tryMove(i, d * 0.45, nl)) return d * 0.45;
     if (tryMove(i, d * 0.15, nl)) return d * 0.15;
-    let da = lane * (Math.random() < 0.5 ? 0.95 : 0.15) - lat0; da = da > 0.2 ? 0.2 : da < -0.2 ? -0.2 : da;   // yield sideways, own half only
-    if (tryMove(i, d * 0.5, lat0 + da)) return d * 0.5;
+    if (vwait[i] > 0.6) {                                            // blocked for a while: ease sideways toward the freer side (own half only), and stay there
+      const want = Math.abs(lat0) > 0.5 ? 0.15 : 0.95;
+      let da = lane * want - lat0; da = da > mx ? mx : da < -mx ? -mx : da;
+      if (tryMove(i, d * 0.5, lat0 + da)) { vpref[i] = Math.abs(lat0 + da) || vpref[i]; return d * 0.5; }
+    }
     // still waiting at a stop line: reconsider which street to take next
     if (Math.random() < 0.3) vnx[i] = pickNext(dir === 1 ? net.v[ve[i]] : net.u[ve[i]], ve[i]);
     return 0;
@@ -505,6 +568,7 @@ GM.createRunner = function createRunner(post) {
   const acc = { steps: 0, mv: 0, blocked: 0, sumV: 0, sumF: 0 };
   function substep(h) {
     let mv = 0, blocked = 0, sumV = 0, sumF = 0;
+    curH = h;
     const off = (Math.random() * nv) | 0, spd = net.spdF;
     for (let c = 0; c < nv; c++) {
       let i = c + off; if (i >= nv) i -= nv;       // rotating start: nobody has permanent priority
@@ -767,6 +831,7 @@ GM.createRunner = function createRunner(post) {
   function setupNet(m) {
     net = GM.prepareNetwork(m.raw);
     GM.applyRoadArea(net, P.areaKm2);
+    if (m.flow && m.flow.ow && m.flow.ow.length === net.E) { GM.applyFlow(net, m.flow.ow, m.flow.fl); }
     net.pk = new Uint8Array(net.E); if (m.noPark && m.noPark.length === net.E) net.pk.set(m.noPark);
     net.occ = new Float32Array(net.E); net.spdF = new Float32Array(net.E).fill(1);
     net.eb = new Float32Array(net.E); net.ep = new Float32Array(net.E);      // per-street waiting / presence (vehicle-seconds) for hotspot ranking
@@ -788,6 +853,7 @@ GM.createRunner = function createRunner(post) {
         case 'init': init(m); break;
         case 'params': applyParams(m.p); break;
         case 'noPark': setNoPark(m.mask); break;
+        case 'streets': setStreets(m.ow, m.fl, m.mask); break;
         case 'counts': pendCounts = m.counts; break;                // latest wins; applied at the next loop iteration
         case 'dims': setDims(m.dims); updateRmax(); layoutAt = nowMs(); dirty = true; break;
         case 'scenario': runScenario(m); break;
