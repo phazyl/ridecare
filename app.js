@@ -51,7 +51,7 @@ const counts = new Int32Array(nT);   // requested per type (what the sliders say
 const placed = new Int32Array(nT);   // reported by the worker: actually on the street, never overlapping
 const state = {
   areaKm2: AREA.osmnx, parkShare: DEFAULTS.parkShare / 100, parkStrip: DEFAULTS.parkStrip,
-  safe: false, react: 1.5, mu: 0.6,
+  safe: false, react: 1.5, mu: 0.6, idm: true, bayCap: true, bayMoto: 132230, bayCar: 7163, offLots: 1111, offPriv: 0,
   jam: DEFAULTS.jam, patience: DEFAULTS.patience, simSpeed: DEFAULTS.simSpeed, dotPx: DEFAULTS.dotPx,
   paused: false, heat: true, slow: false, synthetic: false,
   year: 2024, yearCustom: false, advBusy: false,
@@ -75,7 +75,7 @@ const FP = (t) => TYPES[t].L * TYPES[t].W;
 function paramsMsg() {
   const A = expectedPerYear(requestedTotal(), state.beta);
   return {
-    P: { areaKm2: state.areaKm2, parkShare: state.parkShare, parkShareT: clkParkArr(), parkStrip: state.parkStrip, jam: state.jam, slow: state.slow, patience: state.patience, safe: state.safe, react: state.react, mu: state.mu },
+    P: { areaKm2: state.areaKm2, parkShare: state.parkShare, parkShareT: clkParkArr(), parkStrip: state.parkStrip, jam: state.jam, slow: state.slow, patience: state.patience, safe: state.safe, react: state.react, mu: state.mu, idm: state.idm, bayCap: state.bayCap, bayMoto: state.bayMoto, bayCar: state.bayCar },
     C: { on: state.colOn, perDay: A / 365 * clkExposure(), secPerDay: clkSecPerDay() },
     simSpeed: state.simSpeed, paused: state.paused || state.advBusy, hidden: typeof document !== 'undefined' && !!document.hidden,
   };
@@ -480,17 +480,29 @@ function clkBind() {
  *   Default: Boduthakurufaanu Magu (OSM also uses this name for the Malé-Hulhumalé bridge) and the bridge itself are closed on both kerbs.
  *   The rules are kept in this browser (localStorage) and are tied to the network file they were made for.
  * ===================================================================== */
-const NP = { names: ['Boduthakurufaanu Magu', 'Sinamalé Bridge'], pk: null, list: [], sel: null, all: false, key: 'gm_streets_v2' };
+const NP = { names: ['Boduthakurufaanu Magu', 'Sinamalé Bridge'], pk: null, list: [], sel: null, all: false, key: 'gm_streets_v3', bridge: null };
 const npName = (e) => (net.nm[e] >= 0 ? net.names[net.nm[e]] : null);
-function npDefault() {
-  const pk = new Uint8Array(net.E), ids = NP.names.map((n) => net.names.indexOf(n)).filter((i) => i >= 0), ends = [];
+const hrand = (e) => { let x = Math.imul(e + 1, 2654435761) >>> 0; x ^= x >>> 15; x = Math.imul(x, 2246822519) >>> 0; x ^= x >>> 13; return (x >>> 0) / 4294967296; };
+function npBridge() {                                       // the bridge road: closed to parking by default
+  const f = new Uint8Array(net.E), ids = NP.names.map((n) => net.names.indexOf(n)).filter((i) => i >= 0), ends = [];
   const endPts = (e) => { const o = net.off[e], q = net.off[e + 1] - 1; return [[net.px[o], net.py[o]], [net.px[q], net.py[q]]]; };
-  for (let e = 0; e < net.E; e++) if (ids.includes(net.nm[e])) { pk[e] = 3; if (net.len[e] > 1000) ends.push(...endPts(e)); }
+  for (let e = 0; e < net.E; e++) if (ids.includes(net.nm[e])) { f[e] = 1; if (net.len[e] > 1000) ends.push(...endPts(e)); }
   // the bridge's other carriageway: long segments whose two ends lie within 150 m of those bridge ends
   const near = (p) => ends.some((q) => Math.hypot(p[0] - q[0], p[1] - q[1]) < 150);
-  for (let e = 0; e < net.E; e++) if (!pk[e] && net.len[e] > 1000 && endPts(e).every(near)) pk[e] = 3;
+  for (let e = 0; e < net.E; e++) if (!f[e] && net.len[e] > 1000 && endPts(e).every(near)) f[e] = 1;
+  return f;
+}
+// mode: 'one' = one kerb per street (random side, same every time), 'both', 'left', 'right', 'none'. Bridge road stays closed when keepBridge.
+function npParking(mode, keepBridge) {
+  NP.bridge = NP.bridge && NP.bridge.length === net.E ? NP.bridge : npBridge();
+  const pk = new Uint8Array(net.E);
+  for (let e = 0; e < net.E; e++) {
+    if (keepBridge && NP.bridge[e]) { pk[e] = 3; continue; }
+    pk[e] = mode === 'one' ? (hrand(e) < 0.5 ? 1 : 2) : mode === 'left' ? 2 : mode === 'right' ? 1 : mode === 'none' ? 3 : 0;   // bit 1 = left closed, bit 2 = right closed
+  }
   return pk;
 }
+const npDefault = () => npParking('one', true);
 const npGen = () => rawNetwork && rawNetwork.meta && rawNetwork.meta.generated;
 function npStored() {
   try { const o = JSON.parse(localStorage.getItem(NP.key) || 'null'); if (o && o.n === net.E && o.gen === npGen()) return o; } catch (err) { /* storage unavailable */ }
@@ -658,13 +670,23 @@ function drawNp(sc, cx, cy, hw, hh) {
 function npBind() {
   const dl = $('npNames'); net.names.forEach((n) => { const o = document.createElement('option'); o.value = n; dl.appendChild(o); });
   $('clChk').addEventListener('change', (ev) => setClosedSel(ev.target.checked));
+  $('bulkApply').addEventListener('click', () => {
+    const keep = $('bulkBridge').checked, pm = $('bulkPark').value, dm = $('bulkDir').value;
+    NP.bridge = npBridge();
+    if (dm === 'orig') applyStreets(net.ow0, new Uint8Array(net.E));
+    else if (dm === 'two') applyStreets(new Uint8Array(net.E), new Uint8Array(net.E));
+    else if (dm === 'one') applyStreets(new Uint8Array(net.E).fill(1), new Uint8Array(net.E));
+    if (pm !== 'keep') { NP.pk = npParking(pm, keep); }
+    npRefresh(true);
+    if (sim) sim.post({ cmd: 'noPark', mask: Array.from(NP.pk) });
+  });
   $('dirSel').addEventListener('change', (ev) => setDirection(parseInt(ev.target.value, 10)));
   $('dirReset').addEventListener('click', () => { applyStreets(net.ow0, new Uint8Array(net.E), new Uint8Array(net.E)); });
   $('npL').addEventListener('change', (ev) => npSetSide(1, ev.target.checked));
   $('npR').addEventListener('change', (ev) => npSetSide(2, ev.target.checked));
   $('npAll').addEventListener('change', (ev) => { NP.all = ev.target.checked; npUpdateSel(); needDraw = true; });
   $('npSelX').addEventListener('click', () => { NP.sel = null; npUpdateSel(); needDraw = true; });
-  $('npReset').addEventListener('click', () => { NP.pk = npDefault(); npRefresh(true); });
+  $('npReset').addEventListener('click', () => { NP.bridge = npBridge(); NP.pk = npDefault(); npRefresh(true); });
   $('npClear').addEventListener('click', () => { NP.pk = new Uint8Array(net.E); npRefresh(true); });
   $('npSearch').addEventListener('change', (ev) => {
     const q = ev.target.value.trim().toLowerCase(); if (!q) return;
@@ -876,8 +898,15 @@ function bindUI() {
 
   // parking & movement
   $('parkRange').addEventListener('input', (ev) => { state.parkShare = ev.target.value / 100; $('parkOut').textContent = ev.target.value + ' %'; pushParams(); });
+  const bayUi = () => { state.bayCap = $('bayChk').checked; $('bayMotoNum').disabled = $('bayCarNum').disabled = !state.bayCap; };
+  $('bayChk').addEventListener('change', () => { bayUi(); pushParams(); });
+  $('bayMotoNum').addEventListener('change', (ev) => { const v = parseInt(ev.target.value, 10); if (v >= 0) { state.bayMoto = v; pushParams(); } });
+  $('bayCarNum').addEventListener('change', (ev) => { const v = parseInt(ev.target.value, 10); if (v >= 0) { state.bayCar = v; pushParams(); } });
+  $('offLotsNum').addEventListener('input', (ev) => { const v = parseInt(ev.target.value, 10); if (v >= 0) { state.offLots = v; needDraw = true; } });
+  $('offPrivNum').addEventListener('input', (ev) => { const v = parseInt(ev.target.value, 10); if (v >= 0) { state.offPriv = v; needDraw = true; } });
   $('stripNum').addEventListener('input', (ev) => { const v = parseFloat(ev.target.value); if (v > 0) { state.parkStrip = v; pushParams(); } });
   $('patRange').addEventListener('input', (ev) => { state.patience = +ev.target.value; $('patOut').textContent = state.patience ? state.patience + ' s' : 'off'; pushParams(); });
+  $('idmChk').addEventListener('change', (ev) => { state.idm = ev.target.checked; pushParams(); });
   $('safeChk').addEventListener('change', (ev) => { state.safe = ev.target.checked; $('safeBox').hidden = !state.safe; safeInfo(); pushParams(); });
   $('reactNum').addEventListener('input', (ev) => { const v = parseFloat(ev.target.value); if (v >= 0 && v <= 4) { state.react = v; safeInfo(); pushParams(); } });
   $('muSel').addEventListener('change', (ev) => { state.mu = parseFloat(ev.target.value); safeInfo(); pushParams(); });
@@ -951,8 +980,8 @@ function updateStats() {
   if (useSafe) $('sGap').textContent = (stats.gapFP / areaM2 * 100).toFixed(1) + ' %  (' + fmt(stats.gapFP) + ' m²)';
   $('sParkFoot').textContent = (stats.parkedFP / areaM2 * 100).toFixed(1) + ' %';
   $('sVeh').textContent = fmt(total) + '  (' + fmt(stats.mv) + ' / ' + fmt(stats.parkedN) + ')';
-  const unfit = req - total;
-  $('sPlaced').textContent = unfit > 0 ? fmt(total) + ' of ' + fmt(req) + ' · ' + fmt(unfit) + ' do not fit' : fmt(total) + ' of ' + fmt(req);
+  const offN = Math.min(Math.max(0, req - total), Math.min(shortParkedNow(), offSupply())), unfit = Math.max(0, req - total - offN);
+  $('sPlaced').textContent = fmt(total) + ' of ' + fmt(req) + ' on street' + (offN ? ' · ' + fmt(offN) + ' off-street' : '') + (unfit > 0 ? ' · ' + fmt(unfit) + ' no bay' : '');
   $('sPlaced').style.color = unfit > 0 ? '#f85149' : '';
   updateNoRoom(unfit, req, areaM2);
   $('sBlocked').textContent = stats.mv ? (stats.blockedN / stats.mv * 100).toFixed(0) + ' % waiting' : '–';
@@ -978,25 +1007,138 @@ function updateStats() {
 /* =====================================================================
  * 8b. "NO ROOM" BUBBLE
  * ===================================================================== */
+const offSupply = () => Math.max(0, state.offLots) + Math.max(0, state.offPriv);
+function shortParkedNow() {                                         // parked vehicles that found no kerb space (all types)
+  const haveSplit = stats.pt && stats.pt.length === nT; let s = 0;
+  for (let t = 0; t < nT; t++) {
+    const ps = clkOn() ? 1 - clkMoveShare(t) : state.parkShare, tP = Math.round(counts[t] * ps);
+    s += Math.max(0, tP - (haveSplit ? stats.pt[t] : Math.round(placed[t] * (stats.parkedN / Math.max(1, placedTotal())))));
+  }
+  return s;
+}
 function updateNoRoom(unfit, req, areaM2) {
   const box = $('noRoom');
   if (unfit <= 0 || !req) { box.hidden = true; return; }
   box.hidden = false;
-  $('noRoomTxt').textContent = '⚠ ' + fmt(unfit) + ' vehicle' + (unfit === 1 ? '' : 's') + ' ha' + (unfit === 1 ? 's' : 've') + ' no room';
-  if (!box.classList.contains('open')) return;                       // body is built only while it is open (cheap)
-  let reqFoot = 0, plFoot = 0;
-  for (let t = 0; t < nT; t++) { reqFoot += counts[t] * FP(t); plFoot += placed[t] * FP(t); }
-  const miss = TYPES.map((t, i) => [t.name, counts[i] - placed[i]]).filter((x) => x[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, 3);
-  const T = clkTotals(), parkWant = Math.round(T.pk), parkFit = stats.parkedN, mvFit = stats.mv;
-  const noKerb = Math.max(0, parkWant - parkFit), noLane = Math.max(0, Math.round(T.mv) - mvFit);
-  $('noRoomBody').innerHTML =
-    `<b>Why they are not on the street</b><br>` +
-    `Vehicles may never overlap and may not stand inside a junction. The ${fmt(req)} requested vehicles would cover ` +
-    `<b>${(reqFoot / areaM2 * 100).toFixed(1)} %</b> of the ${state.areaKm2.toFixed(3)} km² street surface (footprints only). ${fmt(req - unfit)} fit (${(plFoot / areaM2 * 100).toFixed(1)} %).<br>` +
-    `<span class="mut">Parked: ${fmt(parkFit)} of ${fmt(parkWant)} found kerb space${noKerb ? ' (' + fmt(noKerb) + ' did not)' : ''}. Moving: ${fmt(mvFit)} of ${fmt(Math.round(T.mv))} found lane space${noLane ? ' (' + fmt(noLane) + ' did not)' : ''}. ` +
-    `Most affected: ${miss.map((x) => x[0] + ' ' + fmt(x[1])).join(', ')}.</span><br>` +
-    `<span class="mut">Parking: the report counts 139,393 slots (132,230 motorcycle, 7,163 car), but OpenStreetMap maps only about 6 lots (about 1,100 spaces). The simulation therefore parks along street kerbs; a vehicle with no kerb space is treated as parked off-street. ` +
-    `The count can fall as traffic moves, at quieter times of day, or with a wider kerb strip or more road area.</span>`;
+  $('noRoomTxt').textContent = '⚠ ' + fmt(unfit) + ' vehicle' + (unfit === 1 ? '' : 's') + ' ha' + (unfit === 1 ? 's' : 've') + ' no bay or room';
+}
+
+
+/* =====================================================================
+ * 8d. PLACEMENT REPORT (why vehicles are not on the street, by type and area, and what would help)
+ * ===================================================================== */
+const ZONES = ['Malé', 'Hulhumalé', 'Bridge, airport & links'];
+const zoneAt = (x, y) => (x < 2250 && y < 1400 ? 0 : y >= 3200 ? 1 : 2);      // by position on this network (Villimalé is not in the network file)
+const RP = { open: false, timer: 0, data: null };
+let edgeZone = null;
+function rpPrep() {
+  if (edgeZone && edgeZone.length === net.E) return;
+  edgeZone = new Uint8Array(net.E);
+  for (let e = 0; e < net.E; e++) { const k = net.off[e] + ((net.off[e + 1] - net.off[e]) >> 1); edgeZone[e] = zoneAt(net.px[k], net.py[k]); }
+}
+const usableKerb = (e) => Math.max(0, net.len[e] - 2 * Math.min(4, net.len[e] * 0.45));   // kerb length that parked vehicles can use (junction boxes excluded)
+function rpCompute() {
+  rpPrep();
+  const areaM2 = state.areaKm2 * 1e6;
+  const psT = TYPES.map((_, t) => (clkOn() ? 1 - clkMoveShare(t) : state.parkShare));
+  const tP = TYPES.map((_, t) => Math.round(counts[t] * psT[t])), tM = TYPES.map((_, t) => counts[t] - tP[t]);
+  const haveSplit = stats.pt && stats.mt && stats.pt.length === nT;
+  const pt = TYPES.map((_, t) => (haveSplit ? stats.pt[t] : Math.round(placed[t] * (stats.parkedN / Math.max(1, placedTotal()))))), mt = TYPES.map((_, t) => placed[t] - pt[t]);
+  const rows = TYPES.map((tp, t) => {
+    const req = counts[t], on = placed[t], short = Math.max(0, req - on);
+    return { t, name: tp.name, color: tp.color, req, on, short, shortP: Math.max(0, tP[t] - pt[t]), shortM: Math.max(0, tM[t] - mt[t]), tP: tP[t], tM: tM[t] };
+  }).filter((x) => x.req > 0).sort((a, b) => b.short - a.short || b.req - a.req);
+  let offLeft = offSupply();                                              // off-street spaces go first to the vehicles that need a car-size bay
+  rows.slice().sort((a, b) => (TYPES[a.t].L <= 2.3 ? 1 : 0) - (TYPES[b.t].L <= 2.3 ? 1 : 0)).forEach((x) => { x.off = Math.min(x.shortP, offLeft); offLeft -= x.off; x.nobay = x.short - x.off; x.noP = x.shortP - x.off; });
+  const sum = (k) => rows.reduce((s, x) => s + x[k], 0);
+  const tot = { req: sum('req'), on: sum('on'), short: sum('short'), shortP: sum('noP'), shortM: sum('shortM'), off: sum('off'), nobay: sum('nobay'), shortPAll: sum('shortP') };
+  const bays = [0, 1].map((q) => { let dem = 0, on = 0; rows.forEach((x) => { if ((TYPES[x.t].L <= 2.3 ? 0 : 1) === q) { dem += x.tP; on += (haveSplit ? stats.pt[x.t] : 0); } }); return { dem, on, bays: q ? state.bayCar : state.bayMoto }; });
+  let wl = 0, wn = 0; for (let t = 0; t < nT; t++) { wl += tP[t] * (TYPES[t].L + 0.1); wn += tP[t]; }
+  let sl = 0, sn = 0; rows.forEach((x) => { sl += x.shortP * (TYPES[x.t].L + 0.1); sn += x.shortP; });
+  const Lavg = sn ? sl / sn : (wn ? wl / wn : 2.1);                       // mean length of the parked vehicles that lack space (incl. gap): they are the ones new kerb would hold
+  let pLen = 0; for (let t = 0; t < nT; t++) pLen += (haveSplit ? stats.pt[t] : pt[t]) * (TYPES[t].L + 0.1);   // kerb length the parked vehicles use now
+  // areas: street and kerb lengths from the network, vehicles from the live positions
+  const Z = ZONES.map((name) => ({ name, seg: 0, streetKm: 0, openKm: 0, closedKm: 0, parked: 0, moving: 0, pLen: 0 }));
+  const cats = {}, byStreet = {};
+  let openAll = 0, closedAll = 0;
+  const add = (map, key, km) => { map[key] = (map[key] || 0) + km; };
+  for (let e = 0; e < net.E; e++) {
+    const z = Z[edgeZone[e]], u = usableKerb(e), m = NP.pk ? NP.pk[e] : 0;
+    const closedSides = net.cl[e] ? 2 : (m & 1) + ((m >> 1) & 1);
+    z.seg++; z.streetKm += net.len[e] / 1000; z.openKm += u * (2 - closedSides) / 1000; z.closedKm += u * closedSides / 1000;
+    openAll += u * (2 - closedSides); closedAll += u * closedSides;
+    if (closedSides && u > 0) {
+      const cat = net.cl[e] ? 'Streets closed to traffic' : NP.bridge && NP.bridge[e] ? 'Bridge & ring road (default rule)' : closedSides === 2 ? 'No-parking streets (set by you)' : 'One kerb closed (one-side rule)';
+      add(cats, cat, u * closedSides / 1000);
+      const nm = net.nm[e] >= 0 ? net.names[net.nm[e]] : 'Unnamed streets'; (byStreet[nm] = byStreet[nm] || { km: 0, zones: {} }).km += u * closedSides / 1000;
+      byStreet[nm].zones[edgeZone[e]] = 1;
+    }
+  }
+  if (frame) {
+    const { xs, ys, gs, n } = frame;
+    for (let g = 0; g < nT * 2; g++) for (let i = gs[g]; i < gs[g + 1] && i < n; i++) { const z = Z[zoneAt(xs[i], ys[i])]; if (g & 1) { z.parked++; z.pLen += TYPES[g >> 1].L + 0.1; } else z.moving++; }
+  }
+  Z.forEach((z) => { z.occ = z.openKm > 0 ? Math.min(1, z.pLen / (z.openKm * 1000)) : 0; });
+  const eff = tot.shortP > 0 && openAll > 0 ? Math.min(1, pLen / openAll) : 1;   // how much of the open kerb the placement really fills
+  const gain = (km) => Math.min(tot.shortP, Math.round(km * 1000 / Lavg * eff));
+  const levers = Object.entries(cats).map(([k, km]) => ({ name: k, km, n: gain(km) })).sort((a, b) => b.n - a.n);
+  const streets = Object.entries(byStreet).map(([k, v]) => ({ name: k, km: v.km, n: gain(v.km), area: Object.keys(v.zones).map((q) => ZONES[q].split(',')[0]).join(' / ') })).sort((a, b) => b.n - a.n).slice(0, 8);
+  const ctx = (CLK.curves ? (clkOn() ? DAYN[CLK.day] + ' ' + clkFmtTime(CLK.min) + (CLK.live ? ' (live, Maldives time)' : '') : 'time of day off') : '') + ' · fleet year ' + state.year + (state.yearCustom ? ' (edited)' : '');
+  return { bays, rows, tot, Z, levers, streets, closedAllKm: closedAll / 1000, openAllKm: openAll / 1000, eff, Lavg, ctx, allGain: gain(closedAll / 1000), cover: stats.effFP != null ? 0 : 0, areaM2, safe: state.safe };
+}
+const rpPct = (a, b) => (b ? (100 * a / b).toFixed(1) + ' %' : '–');
+function rpRender() {
+  const d = RP.data = rpCompute(), T = d.tot;
+  $('rpCtx').textContent = d.ctx + ' · parking: ' + d.openAllKm.toFixed(1) + ' km of kerb open, ' + d.closedAllKm.toFixed(1) + ' km closed';
+  $('rpKpi').innerHTML = [['Requested', fmt(T.req), ''], ['On the street', fmt(T.on), rpPct(T.on, T.req)], ['Parked off-street', fmt(T.off), 'lots + garages you set: ' + fmt(offSupply())],
+    ['No bay or room', fmt(T.nobay), rpPct(T.nobay, T.req)], ['… parked, no bay', fmt(T.shortP), ''], ['… moving, no lane', fmt(T.shortM), '']]
+    .map((k, i) => `<div class="kpi${i === 3 && T.nobay ? ' bad' : ''}"><b>${k[1]}</b><span>${k[0]}</span><small>${k[2]}</small></div>`).join('');
+  const mx = Math.max(1, ...d.rows.map((x) => x.req));
+  $('rpBays').innerHTML = '<tr><th>Bays (report)</th><th>Bays</th><th>Parked demand now</th><th>Parked on kerb now</th><th>Demand beyond the bays</th></tr>' +
+    ['Motorcycle-size (end-on, 1 m of kerb)', 'Car-size (shared by cars, pickups, vans, jeeps, trucks, lorries, buses …)'].map((nm, q) => { const y = d.bays[q]; return `<tr><td>${nm}</td><td>${fmt(y.bays)}</td><td>${fmt(y.dem)}</td><td>${fmt(y.on)}</td><td class="${y.dem > y.bays ? 'bad' : ''}">${fmt(Math.max(0, y.dem - y.bays))}</td></tr>`; }).join('');
+  $('rpTypes').innerHTML = '<tr><th>Vehicle type</th><th>Requested</th><th>On street</th><th>Off-street</th><th>No bay or room</th><th>Parked: no bay</th><th>Moving: no lane</th><th class="bar">On street / not</th></tr>' +
+    d.rows.map((x) => `<tr><td><i class="sw2" style="background:${x.color}"></i>${esc(x.name)}</td><td>${fmt(x.req)}</td><td>${fmt(x.on)}</td><td>${fmt(x.off)}</td><td class="${x.nobay ? 'bad' : ''}">${fmt(x.nobay)} <small>${rpPct(x.nobay, x.req)}</small></td><td>${fmt(x.noP)}</td><td>${fmt(x.shortM)}</td>` +
+      `<td class="bar"><div class="bb" style="width:${(100 * x.req / mx).toFixed(1)}%"><div class="ok" style="width:${x.req ? (100 * x.on / x.req).toFixed(1) : 0}%"></div></div></td></tr>`).join('') +
+    `<tr class="tot"><td>All types</td><td>${fmt(T.req)}</td><td>${fmt(T.on)}</td><td>${fmt(T.off)}</td><td>${fmt(T.nobay)} <small>${rpPct(T.nobay, T.req)}</small></td><td>${fmt(T.shortP)}</td><td>${fmt(T.shortM)}</td><td></td></tr>`;
+  $('rpZones').innerHTML = '<tr><th>Area</th><th>Street km</th><th>Kerb open (km)</th><th>Kerb closed (km)</th><th>Parked now</th><th>Moving now</th><th>Kerb in use</th></tr>' +
+    d.Z.filter((z) => z.seg).map((z) => `<tr><td>${esc(z.name)}</td><td>${z.streetKm.toFixed(1)}</td><td>${z.openKm.toFixed(1)}</td><td>${z.closedKm.toFixed(1)}</td><td>${fmt(z.parked)}</td><td>${fmt(z.moving)}</td><td class="${z.occ > 0.9 ? 'bad' : ''}">${(z.occ * 100).toFixed(0)} %</td></tr>`).join('');
+  const shortP = T.shortP;
+  $('rpLevers').innerHTML = shortP > 0
+    ? `<div class="note" style="margin:0 0 6px">${fmt(shortP)} parked vehicles have no bay. Re-opening kerb that rules have closed would fit about this many more (estimate; a kerb space is taken as ${d.Lavg.toFixed(1)} m, and the model fills about ${(d.eff * 100).toFixed(0)} % of open kerb):</div>` +
+      '<table><tr><th>Closed kerb</th><th>km</th><th>≈ more vehicles</th></tr>' + d.levers.map((x) => `<tr><td>${esc(x.name)}</td><td>${x.km.toFixed(1)}</td><td><b>${fmt(x.n)}</b></td></tr>`).join('') +
+      `<tr class="tot"><td>All closed kerb</td><td>${d.closedAllKm.toFixed(1)}</td><td><b>${fmt(d.allGain)}</b></td></tr></table>` +
+      '<div class="h4">Largest single gains</div><table><tr><th>Street</th><th>Area</th><th>Closed kerb (km)</th><th>≈ more vehicles</th></tr>' + d.streets.map((x) => `<tr><td>${esc(x.name)}</td><td>${esc(x.area)}</td><td>${x.km.toFixed(1)}</td><td>${fmt(x.n)}</td></tr>`).join('') + '</table>' +
+      '<div class="note">Gains cannot exceed the vehicles that currently lack space, and they overlap: they do not add up when several kerbs are re-opened at once. Moving vehicles without lane space are not helped by kerb space; they need fewer vehicles or more road.</div>'
+    : '<div class="note" style="margin:0">Every parked vehicle has kerb space, so re-opening closed kerb would not add capacity now.</div>';
+  const mvShort = T.shortM > 0 ? ` ${fmt(T.shortM)} moving vehicles found no free lane space.` : '';
+  $('rpWhy').innerHTML = `<b>How to read this.</b> Vehicles may never overlap and may not stand inside a junction. ${fmt(T.shortP)} parked vehicles found no free kerb space.${mvShort} ` +
+    '<br><b>Parking supply.</b> The report counts 132,230 motorcycle and 7,163 car parking slots, surveyed along the streets of Malé and Hulhumalé (about 0.65 per metre of kerb in both). The simulation therefore parks along kerbs, one vehicle deep, on the kerbs that rules leave open: motorcycles end-on (1 m of kerb each, as in HDC’s bay standard) and everything else lengthwise. Car-size bays are shared by cars, pickups, vans and all larger vehicles. With “Limit kerb parking to the report’s bays” on, kerb parking stops at the report’s numbers. ' +
+    'Off-street spaces are a setting: OpenStreetMap maps about 6 lots (around 1,100 spaces). <b>Private and residential garages cannot be estimated</b>: HDC declined to share the data, so they default to 0 and should be entered by the user once known. A vehicle with no bay, kerb or off-street space is assumed to park illegally, double-park or not use the road. ' +
+    'The areas are assigned by position on the map. The simulation does not assign vehicles to areas, so the shortfall is shown for the whole network, and the area table shows how full each area’s kerb is. Villimalé is not in the network file.';
+}
+function rpOpen() { RP.open = true; $('rp').hidden = false; document.body.classList.add('rpopen'); rpRender(); clearInterval(RP.timer); RP.timer = setInterval(rpRender, 1000); }
+function rpClose() { RP.open = false; $('rp').hidden = true; document.body.classList.remove('rpopen'); clearInterval(RP.timer); }
+function rpCsv() {
+  const d = RP.data || rpCompute(), q = (s) => '"' + String(s).replace(/"/g, '""') + '"', L = [];
+  L.push(['Placement report', d.ctx].map(q).join(','), '');
+  L.push('Vehicle type,Requested,On street,Not accommodated,Parked: no kerb space,Moving: no lane space');
+  d.rows.forEach((x) => L.push([q(x.name), x.req, x.on, x.short, x.shortP, x.shortM].join(',')));
+  L.push(['All types', d.tot.req, d.tot.on, d.tot.short, d.tot.shortP, d.tot.shortM].join(','), '');
+  L.push('Area,Street km,Kerb open km,Kerb closed km,Parked now,Moving now,Kerb in use %');
+  d.Z.filter((z) => z.seg).forEach((z) => L.push([q(z.name), z.streetKm.toFixed(2), z.openKm.toFixed(2), z.closedKm.toFixed(2), z.parked, z.moving, (z.occ * 100).toFixed(0)].join(',')));
+  L.push('', 'Closed kerb category,km,Approx. more vehicles if re-opened');
+  d.levers.forEach((x) => L.push([q(x.name), x.km.toFixed(2), x.n].join(',')));
+  L.push('', 'Street,Area,Closed kerb km,Approx. more vehicles if re-opened');
+  d.streets.forEach((x) => L.push([q(x.name), q(x.area), x.km.toFixed(2), x.n].join(',')));
+  const blob = new Blob([L.join('\n')], { type: 'text/csv' }), a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'placement-report.csv'; document.body.appendChild(a); a.click(); a.remove();
+}
+function rpBind() {
+  $('rpClose').addEventListener('click', rpClose);
+  $('rp').addEventListener('click', (ev) => { if (ev.target === $('rp')) rpClose(); });
+  $('rpCsv').addEventListener('click', rpCsv);
+  $('rpPrint').addEventListener('click', () => window.print());
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && RP.open) rpClose(); });
 }
 
 /* =====================================================================
@@ -1147,10 +1289,8 @@ function bindAdvisor() {
   $('advRun').addEventListener('click', advStart);
   $('advCancel').addEventListener('click', () => { advStop(); advUi().txt.textContent = 'Cancelled.'; });
   $('hotChk').addEventListener('change', (ev) => { state.showHot = ev.target.checked; needDraw = true; });
-  $('noRoomBtn').addEventListener('click', () => {
-    const box = $('noRoom'); box.classList.toggle('open'); $('noRoomBtn').setAttribute('aria-expanded', box.classList.contains('open'));
-    updateStats();
-  });
+  $('noRoomBtn').addEventListener('click', rpOpen);
+  $('rpOpen').addEventListener('click', rpOpen);
 }
 
 /* =====================================================================
@@ -1201,7 +1341,7 @@ async function init() {
   }
   net = GM.prepareNetwork(raw);
   GM.applyRoadArea(net, state.areaKm2);
-  npLoadFlow(); NP.pk = npLoad(); npBind(); npRefresh(false);
+  npLoadFlow(); NP.bridge = npBridge(); NP.pk = npLoad(); npBind(); rpBind(); npRefresh(false);
 
   yearsCfg = years;
   if (yearsCfg) {

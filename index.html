@@ -87,6 +87,31 @@
   .clkread{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin:6px 0;font-size:13px}
   .mut{color:var(--mut)}
   #clkBox.off{opacity:.45;pointer-events:none}
+  .abtn{font-size:12px;white-space:nowrap;border:1px solid var(--line);border-radius:6px;padding:5px 9px;color:var(--txt);text-decoration:none;background:var(--panel2)}
+  .abtn:hover{border-color:var(--acc)}
+  #phead{flex-wrap:wrap}
+  #rp{position:fixed;inset:0;z-index:70;background:#000a;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:24px 12px}
+  #rp[hidden]{display:none}
+  #rpBox{background:var(--panel);border:1px solid var(--line);border-radius:12px;max-width:1000px;width:100%;padding:18px 22px 22px}
+  #rpBox h2{margin:0 0 2px;font-size:18px}
+  #rpBox h4,.h4{margin:16px 0 6px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
+  #rpBox table{width:100%;border-collapse:collapse;font-size:13px;margin:4px 0}
+  #rpBox th{text-align:left;color:var(--mut);font-weight:600;font-size:12px;border-bottom:1px solid var(--line);padding:5px 6px}
+  #rpBox td{padding:5px 6px;border-bottom:1px solid #2a344155}
+  #rpBox td:not(:first-child),#rpBox th:not(:first-child){text-align:right}
+  #rpBox td.bar,#rpBox th.bar{width:22%}
+  #rpBox tr.tot td{font-weight:700;border-top:1px solid var(--line)}
+  #rpBox .bad{color:#ff8a80}
+  #rpBox small{color:var(--mut)}
+  .sw2{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:7px;vertical-align:-1px}
+  .bb{height:9px;background:#f8514955;border-radius:5px;overflow:hidden;margin-left:auto}
+  .bb .ok{height:100%;background:var(--ok)}
+  #rpKpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:12px 0}
+  .kpi{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px 12px}
+  .kpi b{display:block;font-size:22px}.kpi span{color:var(--mut);font-size:12px}.kpi small{margin-left:6px}
+  .kpi.bad{border-color:#c2561f}.kpi.bad b{color:#ffb089}
+  #rpBtns{display:flex;gap:8px;justify-content:flex-end;margin-bottom:6px}
+  @media print{body>*:not(#rp){display:none!important}#rp{position:static;background:none;padding:0}#rpBox{border:0;max-width:none}#rpBtns{display:none}body{background:#fff;color:#000}#rpBox{background:#fff;color:#000}}
   .advlevel{display:flex;align-items:center;gap:10px;margin:2px 0 6px}
   .advlevel .chip{font-weight:700;padding:3px 10px;border-radius:12px;color:#0d1117}
   .hot{border:1px solid var(--line);border-left-width:4px;border-radius:8px;background:var(--panel2);padding:7px 9px;margin:7px 0;cursor:pointer}
@@ -117,7 +142,7 @@
   <div id="stage">
     <canvas id="cv"></canvas>
     <div id="banner"></div>
-    <div id="noRoom" hidden><button id="noRoomBtn" aria-expanded="false"><span id="noRoomTxt"></span></button><div id="noRoomBody"></div></div>
+    <div id="noRoom" hidden><button id="noRoomBtn" aria-expanded="false"><span id="noRoomTxt"></span> <span style="opacity:.8;font-weight:400">· details</span></button></div>
     <div id="zoom"><button id="zin" title="Zoom in">+</button><button id="zout" title="Zoom out">−</button><button id="zfit" title="Fit to screen" style="font-size:13px">⤢</button></div>
     <div id="legend">Road colour = local coverage vs. packing limit
       <div class="grad"></div><div class="lr"><span>free</span><span>jammed</span></div></div>
@@ -125,7 +150,7 @@
   </div>
 
   <aside id="panel">
-    <div id="phead"><h1>Greater Malé road capacity simulator</h1><button id="fullBtn" title="Show all controls full screen (Esc to close)">⤢ Full screen</button></div>
+    <div id="phead"><h1>Greater Malé road capacity simulator</h1><a href="about.html" target="_blank" class="abtn" title="What this simulation is and what it can do">About</a><button id="fullBtn" title="Show all controls full screen (Esc to close)">⤢ Full screen</button></div>
     <div class="sub">Vehicle counts from the IUM vehicle-restriction report (Table 3). Drag to pan, scroll to zoom — zoom in past ~3 px/m to see true-scale vehicles.</div>
 
     <div id="secs">
@@ -140,6 +165,7 @@
     <div class="stat"><span>…of which parked</span><b id="sParkFoot">–</b></div>
     <div class="stat"><span>Vehicles (moving / parked)</span><b id="sVeh">–</b></div>
     <div class="stat"><span>Placement (fits / requested)</span><b id="sPlaced">–</b></div>
+    <div class="line"><button id="rpOpen">Placement report: who does not fit, and what would help</button></div>
     <div class="stat"><span>Traffic state</span><b id="sBlocked">–</b></div>
     <div class="stat"><span>Jam relocations (total)</span><b id="sReloc">–</b></div>
     <div class="stat"><span>Mean speed</span><b id="sSpeed">–</b></div>
@@ -164,9 +190,14 @@
       <label class="chk"><input type="checkbox" id="npL" checked> <span style="color:#ffa62b">Left kerb</span>: parking allowed</label>
       <label class="chk"><input type="checkbox" id="npR" checked> <span style="color:#3fe0ff">Right kerb</span>: parking allowed</label>
     </div>
+    <div class="line" style="margin-top:10px"><label><b>All streets at once</b></label></div>
+    <select id="bulkPark" style="width:100%;margin-bottom:6px"><option value="keep">Parking: leave as it is</option><option value="one">Parking: one kerb per street (random side)</option><option value="both">Parking: both kerbs</option><option value="left">Parking: left kerb only</option><option value="right">Parking: right kerb only</option><option value="none">Parking: nowhere</option></select>
+    <select id="bulkDir" style="width:100%"><option value="keep">Directions: leave as they are</option><option value="orig">Directions: original (OpenStreetMap)</option><option value="two">Directions: all two-way</option><option value="one">Directions: all one-way (file direction; may create dead ends)</option></select>
+    <label class="chk"><input type="checkbox" id="bulkBridge" checked> Keep the bridge road closed to parking</label>
+    <div class="line"><button id="bulkApply">Apply to all streets</button></div>
     <div class="note" id="dirSummary"></div>
     <div class="note" id="npSummary"></div>
-    <div class="line"><button id="dirReset" title="Directions as in OpenStreetMap; nothing closed">Reset directions &amp; closures</button><button id="npReset" title="Boduthakurufaanu Magu ring road and the Malé–Hulhumalé bridge">Default parking</button><button id="npClear">Allow all parking</button></div>
+    <div class="line"><button id="dirReset" title="Directions as in OpenStreetMap; nothing closed">Reset directions &amp; closures</button><button id="npReset" title="Boduthakurufaanu Magu ring road and the Malé–Hulhumalé bridge">Default parking (one kerb)</button><button id="npClear">Allow all parking</button></div>
     <div class="note">Red dashes on the map = closed kerbs; arrows on the selected street = direction of travel.</div>
     </section>
     <section class="sec">
@@ -225,11 +256,18 @@
 <h3>Parking &amp; movement</h3>
     <div class="line"><label for="parkRange" id="parkLbl">Share of vehicles parked</label><output id="parkOut">89 %</output></div>
     <input type="range" id="parkRange" min="0" max="100" step="1" value="89">
+    <label class="chk"><input type="checkbox" id="bayChk" checked> Limit kerb parking to the report’s bays</label>
+    <div class="line"><label for="bayMotoNum">Motorcycle bays (end-on)</label><input type="number" id="bayMotoNum" min="0" step="100" value="132230" style="width:100px"></div>
+    <div class="line"><label for="bayCarNum">Car-size bays (shared by cars, pickups, vans, trucks …)</label><input type="number" id="bayCarNum" min="0" step="100" value="7163" style="width:100px"></div>
+    <div class="line"><label for="offLotsNum">Off-street lots (mapped in OpenStreetMap)</label><input type="number" id="offLotsNum" min="0" step="100" value="1111" style="width:100px"></div>
+    <div class="line"><label for="offPrivNum">Private &amp; residential garages</label><input type="number" id="offPrivNum" min="0" step="100" value="0" style="width:100px"></div>
+    <div class="note">Report: 132,230 motorcycle and 7,163 car parking slots, surveyed along the streets. Garages cannot be estimated: HDC refused to share the data, so enter a figure here once it is known. Vehicles with no bay, kerb or off-street space are assumed to park illegally or stay off the road.</div>
     <div class="line"><label for="stripNum">Kerbside parking strip (m per side)</label><input type="number" id="stripNum" min="0.5" max="4" step="0.1" value="2.3" style="width:70px"></div>
     <div class="line"><label for="patRange">Gridlock breaker: relocate after waiting</label><output id="patOut">5 s</output></div>
     <input type="range" id="patRange" min="0" max="60" step="1" value="5">
     <div class="line"><label for="jamRange">Packing limit (coverage at jam)</label><output id="jamOut">50 %</output></div>
     <input type="range" id="jamRange" min="20" max="90" step="1" value="50">
+    <label class="chk"><input type="checkbox" id="idmChk" checked> Smooth car-following (IDM): vehicles accelerate and brake gradually and keep a speed-dependent gap. Untick for the simple move-if-free rule.</label>
     <label class="chk"><input type="checkbox" id="safeChk"> Safe-spacing capacity: moving vehicles also need reaction + braking distance</label>
     <div id="safeBox" hidden>
       <div class="line"><label for="reactNum">Driver reaction time (s)</label><input type="number" id="reactNum" min="0" max="4" step="0.1" value="1.5" style="width:70px"></div>
@@ -288,5 +326,15 @@
 <script src="shared.js"></script>
 <script src="core.js"></script>
 <script src="app.js"></script>
+<div id="rp" hidden role="dialog" aria-label="Placement report"><div id="rpBox">
+  <div id="rpBtns"><button id="rpCsv">Export CSV</button><button id="rpPrint">Print</button><button id="rpClose">✕ Close</button></div>
+  <h2>Placement report</h2><div class="note" id="rpCtx" style="margin-top:0"></div>
+  <div id="rpKpi"></div>
+  <h4>Report bays against parked demand</h4><table id="rpBays"></table>
+  <h4>By vehicle type</h4><table id="rpTypes"></table>
+  <h4>By area</h4><table id="rpZones"></table>
+  <h4>What would help: re-opening closed kerbs</h4><div id="rpLevers"></div>
+  <h4>Notes</h4><div class="note" id="rpWhy" style="margin-top:0"></div>
+</div></div>
 </body>
 </html>
