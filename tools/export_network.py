@@ -325,6 +325,7 @@ def main():
             "width_scale": round(scale, 4),
             "total_length_m": round(total_len, 1),
             "bounds_m": [round(float(maxx - minx), 1), round(float(maxy - miny), 1)],
+            "origin_utm": [round(float(minx), 2), round(float(miny), 2)],   # UTM 43N position of local (0, 0): lets tools/export_parking.py place lots without OSM matching
             "n_nodes": len(nodes),
             "n_edges": len(edges),
             "oneway_mode": "ignored" if args.ignore_oneway else "osm",

@@ -1,0 +1,12 @@
+name,status,use,moto_cap,car_cap,lat,lon,area_m2,confidence,source,notes
+Hulhumalé Phase 1 parking building (NXT by Batch),planned,mixed,500,800,,,,high,"President's Office, 29 Mar 2026; MMTV (over 800 four-wheelers, over 500 two-wheelers)","13 storeys plus basement, works started; first of 7 planned buildings. The Standard reported 600+ cars, the official sources say 800+."
+Hulhumalé Phase 2 temporary parking zones,temporary,car,,1200,,,,low,Edition.mv 7 Dec 2025; PSM News,"Sources disagree: four zones totalling 1,200 (Edition, names only Hiyaa Tower 16) or one zone of 1,200+ next to the Cat Shelter (PSM). Count once; split into zones when known."
+HDC pocket parking (8 zones),unverified,car,,1374,,,,low,Edition.mv; IUM report Table 16,"1,374 car-size slots leased. Zone locations are in HDC's announcement PDFs. May overlap the report's road-side slots: enter each zone separately when known."
+Alimas Carnival Parking Zone,unverified,mixed,,,,,,low,map listing (unverified),"Waterfront, Boduthakurufaanu Magu. Add outline or area_m2."
+Dhandelelu Parking,unverified,mixed,,,,,,low,map listing (unverified),
+Chandhanee Parking,unverified,mixed,,,,,,low,map listing (unverified),
+Heenaamaage Parking,unverified,moto,,,,,,low,map listing (unverified),Listed as motorcycle parking; the site is also planned for a parking building.
+Ameenee Magu Parking Lot,unverified,moto,335,,,,,low,map listing (unverified),Capacity of about 335 motorcycles reported in the listing.
+Salman Parking Lot,unverified,moto,,,,,,low,map listing (unverified),"Near King Salman Mosque, mainly motorcycles."
+Fithuroanu Smart Parking,unverified,mixed,,,,,,low,map listing (unverified),
+Villingili ferry terminal parking,unverified,car,,20,,,,low,local reporting (unverified),"Villimalé is outside the network map, so this will be listed but not drawn."

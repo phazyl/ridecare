@@ -259,8 +259,17 @@
     <label class="chk"><input type="checkbox" id="bayChk" checked> Limit kerb parking to the report’s bays</label>
     <div class="line"><label for="bayMotoNum">Motorcycle bays (end-on)</label><input type="number" id="bayMotoNum" min="0" step="100" value="132230" style="width:100px"></div>
     <div class="line"><label for="bayCarNum">Car-size bays (shared by cars, pickups, vans, trucks …)</label><input type="number" id="bayCarNum" min="0" step="100" value="7163" style="width:100px"></div>
-    <div class="line"><label for="offLotsNum">Off-street lots (mapped in OpenStreetMap)</label><input type="number" id="offLotsNum" min="0" step="100" value="1111" style="width:100px"></div>
+    <div class="line"><label for="offLotsNum" id="offLotsLbl">Off-street lots (mapped in OpenStreetMap)</label><input type="number" id="offLotsNum" min="0" step="100" value="1111" style="width:100px"></div>
     <div class="line"><label for="offPrivNum">Private &amp; residential garages</label><input type="number" id="offPrivNum" min="0" step="100" value="0" style="width:100px"></div>
+    <div id="lotsBox" hidden>
+      <div class="line"><b>Off-street lots (data/parking.json)</b></div>
+      <label class="chk"><input type="checkbox" id="lotExist" checked> Existing lots <span id="lotExistN" style="color:var(--mut);font-size:12px"></span></label>
+      <label class="chk"><input type="checkbox" id="lotTemp" checked> Temporary zones <span id="lotTempN" style="color:var(--mut);font-size:12px"></span></label>
+      <label class="chk"><input type="checkbox" id="lotPlan"> Planned buildings (future scenario) <span id="lotPlanN" style="color:var(--mut);font-size:12px"></span></label>
+      <label class="chk"><input type="checkbox" id="lotUnv"> Unverified leads <span id="lotUnvN" style="color:var(--mut);font-size:12px"></span></label>
+      <label class="chk"><input type="checkbox" id="lotShow" checked> Show lots on the map</label>
+      <div class="note" id="lotsNote"></div>
+    </div>
     <div class="note">Report: 132,230 motorcycle and 7,163 car parking slots, surveyed along the streets. Garages cannot be estimated: HDC refused to share the data, so enter a figure here once it is known. Vehicles with no bay, kerb or off-street space are assumed to park illegally or stay off the road.</div>
     <div class="line"><label for="stripNum">Kerbside parking strip (m per side)</label><input type="number" id="stripNum" min="0.5" max="4" step="0.1" value="2.3" style="width:70px"></div>
     <div class="line"><label for="patRange">Gridlock breaker: relocate after waiting</label><output id="patOut">5 s</output></div>
@@ -333,6 +342,7 @@
   <h4>Report bays against parked demand</h4><table id="rpBays"></table>
   <h4>By vehicle type</h4><table id="rpTypes"></table>
   <h4>By area</h4><table id="rpZones"></table>
+  <h4>Off-street lots</h4><div id="rpLots"></div>
   <h4>What would help: re-opening closed kerbs</h4><div id="rpLevers"></div>
   <h4>Notes</h4><div class="note" id="rpWhy" style="margin-top:0"></div>
 </div></div>

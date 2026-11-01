@@ -210,6 +210,8 @@ function draw() {
     }
   }
 
+  drawLots(sc, cx, cy, hw, hh);
+
   // ---- vehicles (snapshot is grouped by type and parked flag) ----------
   let trueScale = false;
   if (frame) {
@@ -621,6 +623,58 @@ function npHit(mx, my) {
   }
   return best;
 }
+// Off-street lots: outline coloured by how full it is, with a dot for each vehicle parked there.
+function lotGrid(l) {                                               // fixed positions inside the outline, one per space (visual only)
+  const n = l.cap.moto + l.cap.car, [x0, y0, x1, y1] = l.bb, pts = [];
+  if (n > 0 && l.m2 > 0) {
+    const st = Math.max(1.3, Math.sqrt(l.m2 / n));
+    for (let y = y0 + st / 2; y < y1 && pts.length < n; y += st) for (let x = x0 + st / 2; x < x1 && pts.length < n; x += st) {
+      let ins = false; const q = l.poly;
+      for (let i = 0, j = q.length - 1; i < q.length; j = i++) if ((q[i][1] > y) !== (q[j][1] > y) && x < (q[j][0] - q[i][0]) * (y - q[i][1]) / (q[j][1] - q[i][1] + 1e-12) + q[i][0]) ins = !ins;
+      if (ins) pts.push(x, y);
+    }
+  }
+  l.g = new Float32Array(pts); l.gm = Math.round(l.g.length / 2 * (l.cap.moto / Math.max(1, n)));
+}
+function drawLots(sc, cx, cy, hw, hh) {
+  if (!LOTS.show || !LOTS.list.length) return;
+  const P = LOTS.plan || { usedMoto: 0, capMoto: 0, usedCar: 0, capCar: 0 };
+  const fm = P.capMoto ? P.usedMoto / P.capMoto : 0, fc = P.capCar ? P.usedCar / P.capCar : 0;
+  const wx0 = cx - hw / sc - 20, wx1 = cx + hw / sc + 20, wy0 = cy - hh / sc - 20, wy1 = cy + hh / sc + 20;
+  const S = (x, y) => [(x - cx) * sc + hw, hh - (y - cy) * sc];
+  ctx.lineJoin = 'round'; ctx.lineWidth = 1.5; ctx.font = '11px system-ui, sans-serif'; ctx.textAlign = 'center';
+  for (const l of LOTS.list) {
+    if (l.bb[2] < wx0 || l.bb[0] > wx1 || l.bb[3] < wy0 || l.bb[1] > wy1) continue;
+    const on = !!LOTS.inc[l.status], cap = l.cap.moto + l.cap.car, f = !on || !cap ? 0 : (l.cap.moto * fm + l.cap.car * fc) / cap;
+    const col = !on ? '#8b98a8' : !cap ? '#a371f7' : f >= 0.97 ? '#f85149' : f >= 0.6 ? '#e3a008' : '#3fb950';
+    const sw = (l.bb[2] - l.bb[0]) * sc, sh = (l.bb[3] - l.bb[1]) * sc, [mx, my] = S(l.xy[0], l.xy[1]);
+    ctx.strokeStyle = col; ctx.fillStyle = col;
+    if (Math.max(sw, sh) < 7) {                                    // too small to see at this zoom: a ring marks it
+      ctx.globalAlpha = 0.9; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(mx, my, 5, 0, Math.PI * 2); ctx.stroke(); ctx.lineWidth = 1.5;
+      if (on && f > 0) { ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.arc(mx, my, 5 * Math.sqrt(f), 0, Math.PI * 2); ctx.fill(); }
+      ctx.globalAlpha = 1; continue;
+    }
+    ctx.beginPath();
+    l.poly.forEach(([x, y], i) => { const [X, Y] = S(x, y); if (i) ctx.lineTo(X, Y); else ctx.moveTo(X, Y); });
+    ctx.closePath();
+    ctx.globalAlpha = on ? 0.16 : 0.06; ctx.fill();
+    ctx.globalAlpha = on ? 0.95 : 0.6; ctx.setLineDash(!on || l.schematic ? [5, 4] : []); ctx.stroke(); ctx.setLineDash([]);
+    if (on && f > 0 && Math.max(sw, sh) > 14) {                    // parked vehicles: one dot per space, filled in order
+      if (!l.g) lotGrid(l);
+      const nm = Math.round(l.gm * fm), tot = l.g.length / 2, nc = Math.round((tot - l.gm) * fc), d = Math.max(1.6, Math.min(5, 1.1 * sc));
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = TYPES[0].color; for (let i = 0; i < nm; i++) { const [X, Y] = S(l.g[2 * i], l.g[2 * i + 1]); ctx.fillRect(X - d / 2, Y - d / 2, d, d); }
+      ctx.fillStyle = TYPES[1].color; for (let i = 0; i < nc; i++) { const k = l.gm + i, [X, Y] = S(l.g[2 * k], l.g[2 * k + 1]); ctx.fillRect(X - d / 2, Y - d / 2, d, d); }
+    }
+    if (sc > 1.4 && Math.max(sw, sh) > 40) {
+      ctx.globalAlpha = 1; ctx.fillStyle = '#e6edf3'; ctx.strokeStyle = '#0d1117'; ctx.lineWidth = 3;
+      const txt = l.name + (on && cap ? ' · ' + Math.round(f * 100) + ' %' : ''); ctx.strokeText(txt, mx, my - Math.max(6, sh / 2) - 4); ctx.fillText(txt, mx, my - Math.max(6, sh / 2) - 4); ctx.lineWidth = 1.5;
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.textAlign = 'start';
+}
+
 function drawNp(sc, cx, cy, hw, hh) {
   const P = (k) => [(net.px[k] - cx) * sc + hw, hh - (net.py[k] - cy) * sc];
   const edge = (e, side, col, lw, dash) => {          // side: +1 left kerb, -1 right kerb, 0 = the street itself
@@ -980,7 +1034,7 @@ function updateStats() {
   if (useSafe) $('sGap').textContent = (stats.gapFP / areaM2 * 100).toFixed(1) + ' %  (' + fmt(stats.gapFP) + ' m²)';
   $('sParkFoot').textContent = (stats.parkedFP / areaM2 * 100).toFixed(1) + ' %';
   $('sVeh').textContent = fmt(total) + '  (' + fmt(stats.mv) + ' / ' + fmt(stats.parkedN) + ')';
-  const offN = Math.min(Math.max(0, req - total), Math.min(shortParkedNow(), offSupply())), unfit = Math.max(0, req - total - offN);
+  const plan = LOTS.plan = offPlan(), offN = Math.min(plan.total, Math.max(0, req - total)), unfit = Math.max(0, req - total - offN);
   $('sPlaced').textContent = fmt(total) + ' of ' + fmt(req) + ' on street' + (offN ? ' · ' + fmt(offN) + ' off-street' : '') + (unfit > 0 ? ' · ' + fmt(unfit) + ' no bay' : '');
   $('sPlaced').style.color = unfit > 0 ? '#f85149' : '';
   updateNoRoom(unfit, req, areaM2);
@@ -1007,14 +1061,81 @@ function updateStats() {
 /* =====================================================================
  * 8b. "NO ROOM" BUBBLE
  * ===================================================================== */
-const offSupply = () => Math.max(0, state.offLots) + Math.max(0, state.offPriv);
-function shortParkedNow() {                                         // parked vehicles that found no kerb space (all types)
-  const haveSplit = stats.pt && stats.pt.length === nT; let s = 0;
+/* Off-street parking. Two kinds of supply:
+ *   lots   - outlines from data/parking.json (tools/export_parking.py), each with motorcycle and car-size capacity;
+ *            only the statuses ticked in the panel count. A motorcycle lot takes only motorcycle-size vehicles, a car lot only car-size ones.
+ *   flex   - plain numbers any vehicle can use: "other off-street spaces" and private/residential garages.
+ * Parked vehicles that found no kerb space go to the lots first, then to the flexible spaces. The model has no home address for a
+ * vehicle, so every lot of a class fills evenly (same % full). */
+const LOTS = { list: [], show: true, inc: { existing: true, temporary: true, planned: false, unverified: false }, plan: null, key: 'gm_lots_v1', pending: 0, meta: null };
+const isMotoT = (t) => TYPES[t].L <= 2.3;
+function lotCaps() {
+  let moto = 0, car = 0;
+  for (const l of LOTS.list) if (LOTS.inc[l.status]) { moto += l.cap.moto; car += l.cap.car; }
+  return { moto, car };
+}
+const offFlex = () => Math.max(0, state.offLots) + Math.max(0, state.offPriv);
+const offSupply = () => { const c = lotCaps(); return offFlex() + c.moto + c.car; };
+function shortPByType() {                                           // parked vehicles that found no kerb space, by type
+  const haveSplit = stats.pt && stats.pt.length === nT, out = new Array(nT).fill(0);
   for (let t = 0; t < nT; t++) {
     const ps = clkOn() ? 1 - clkMoveShare(t) : state.parkShare, tP = Math.round(counts[t] * ps);
-    s += Math.max(0, tP - (haveSplit ? stats.pt[t] : Math.round(placed[t] * (stats.parkedN / Math.max(1, placedTotal())))));
+    out[t] = Math.max(0, tP - (haveSplit ? stats.pt[t] : Math.round(placed[t] * (stats.parkedN / Math.max(1, placedTotal())))));
   }
-  return s;
+  return out;
+}
+function offPlan() {
+  const sp = shortPByType(), cap = lotCaps(), off = new Array(nT).fill(0);
+  let moto = cap.moto, car = cap.car, flex = offFlex(), tot = 0;
+  const order = TYPES.map((_, i) => i).sort((a, b) => (isMotoT(a) ? 1 : 0) - (isMotoT(b) ? 1 : 0));   // car-size vehicles first: they have fewer places to go
+  for (const t of order) {
+    let need = sp[t];
+    const m = isMotoT(t), take = Math.min(need, m ? moto : car);
+    if (m) moto -= take; else car -= take;
+    need -= take;
+    const f = Math.min(need, flex); flex -= f;
+    off[t] = take + f; tot += take + f;
+  }
+  return { off, total: tot, capMoto: cap.moto, capCar: cap.car, usedMoto: cap.moto - moto, usedCar: cap.car - car, flexCap: offFlex(), flexUsed: offFlex() - flex, short: sp };
+}
+function shortParkedNow() { return shortPByType().reduce((a, b) => a + b, 0); }
+
+function lotArea(l) { let a = 0; const q = l.poly; for (let i = 0; i < q.length; i++) { const j = (i + 1) % q.length; a += q[i][0] * q[j][1] - q[j][0] * q[i][1]; } return Math.abs(a) / 2; }
+function lotsInit(pk) {
+  LOTS.list = pk && Array.isArray(pk.lots) ? pk.lots.filter((l) => l && l.poly && l.poly.length >= 3 && l.cap) : [];
+  LOTS.meta = pk && pk.meta || null; LOTS.pending = LOTS.meta && LOTS.meta.needs_coordinates ? LOTS.meta.needs_coordinates.length : 0;
+  if (!LOTS.list.length) return;
+  for (const l of LOTS.list) {
+    l.cap = { moto: Math.max(0, l.cap.moto | 0), car: Math.max(0, l.cap.car | 0) };
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (const [x, y] of l.poly) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    l.bb = [x0, y0, x1, y1]; l.m2 = lotArea(l);
+  }
+  LOTS.list.sort((a, b) => (b.cap.moto + b.cap.car) - (a.cap.moto + a.cap.car));
+  try { const v = JSON.parse(localStorage.getItem(LOTS.key) || 'null'); if (v && v.inc) Object.assign(LOTS.inc, v.inc); if (v && typeof v.show === 'boolean') LOTS.show = v.show; } catch (e) { /* storage unavailable */ }
+  state.offLots = 0; $('offLotsNum').value = 0;                      // the lots replace the single "OSM lots" figure
+  $('offLotsLbl').textContent = 'Other off-street spaces not in the lot list (any vehicle)';
+  $('lotsBox').hidden = false;
+  const ids = { existing: 'lotExist', temporary: 'lotTemp', planned: 'lotPlan', unverified: 'lotUnv' };
+  for (const st of Object.keys(ids)) {
+    const el = $(ids[st]); el.checked = !!LOTS.inc[st];
+    el.addEventListener('change', () => { LOTS.inc[st] = el.checked; lotsSave(); lotsSummary(); needDraw = true; });
+  }
+  $('lotShow').checked = LOTS.show;
+  $('lotShow').addEventListener('change', (ev) => { LOTS.show = ev.target.checked; lotsSave(); needDraw = true; });
+  lotsSummary();
+}
+function lotsSave() { try { localStorage.setItem(LOTS.key, JSON.stringify({ inc: LOTS.inc, show: LOTS.show })); } catch (e) { /* ignore */ } }
+function lotsSummary() {
+  const by = {}; for (const l of LOTS.list) { const b = by[l.status] || (by[l.status] = { n: 0, m: 0, c: 0 }); b.n++; b.m += l.cap.moto; b.c += l.cap.car; }
+  const ids = { existing: 'lotExistN', temporary: 'lotTempN', planned: 'lotPlanN', unverified: 'lotUnvN' };
+  for (const st of Object.keys(ids)) { const b = by[st] || { n: 0, m: 0, c: 0 }; $(ids[st]).textContent = b.n ? '· ' + b.n + ' lot' + (b.n > 1 ? 's' : '') + ': ' + fmt(b.m) + ' motorcycle + ' + fmt(b.c) + ' car spaces' : '· none'; }
+  const c = lotCaps(), nocap = LOTS.list.filter((l) => LOTS.inc[l.status] && !(l.cap.moto + l.cap.car)).length;
+  $('lotsNote').innerHTML = 'Counted now: <b>' + fmt(c.moto) + '</b> motorcycle and <b>' + fmt(c.car) + '</b> car-size spaces in lots.' +
+    (nocap ? ' ' + nocap + ' ticked lot' + (nocap > 1 ? 's have' : ' has') + ' no capacity yet.' : '') +
+    (LOTS.pending ? ' ' + LOTS.pending + ' listed lot' + (LOTS.pending > 1 ? 's await' : ' awaits') + ' coordinates in tools/parking_manual.csv.' : '') +
+    ' Capacities from outline area are estimates (about 28 m² per car, 3.8 m² per motorcycle including aisles).';
+  needDraw = true;
 }
 function updateNoRoom(unfit, req, areaM2) {
   const box = $('noRoom');
@@ -1048,8 +1169,8 @@ function rpCompute() {
     const req = counts[t], on = placed[t], short = Math.max(0, req - on);
     return { t, name: tp.name, color: tp.color, req, on, short, shortP: Math.max(0, tP[t] - pt[t]), shortM: Math.max(0, tM[t] - mt[t]), tP: tP[t], tM: tM[t] };
   }).filter((x) => x.req > 0).sort((a, b) => b.short - a.short || b.req - a.req);
-  let offLeft = offSupply();                                              // off-street spaces go first to the vehicles that need a car-size bay
-  rows.slice().sort((a, b) => (TYPES[a.t].L <= 2.3 ? 1 : 0) - (TYPES[b.t].L <= 2.3 ? 1 : 0)).forEach((x) => { x.off = Math.min(x.shortP, offLeft); offLeft -= x.off; x.nobay = x.short - x.off; x.noP = x.shortP - x.off; });
+  const plan = LOTS.plan = offPlan();                                     // parked vehicles with no kerb space go to the lots, then to the flexible spaces
+  rows.forEach((x) => { x.off = Math.min(x.shortP, plan.off[x.t]); x.nobay = x.short - x.off; x.noP = x.shortP - x.off; });
   const sum = (k) => rows.reduce((s, x) => s + x[k], 0);
   const tot = { req: sum('req'), on: sum('on'), short: sum('short'), shortP: sum('noP'), shortM: sum('shortM'), off: sum('off'), nobay: sum('nobay'), shortPAll: sum('shortP') };
   const bays = [0, 1].map((q) => { let dem = 0, on = 0; rows.forEach((x) => { if ((TYPES[x.t].L <= 2.3 ? 0 : 1) === q) { dem += x.tP; on += (haveSplit ? stats.pt[x.t] : 0); } }); return { dem, on, bays: q ? state.bayCar : state.bayMoto }; });
@@ -1084,18 +1205,19 @@ function rpCompute() {
   const levers = Object.entries(cats).map(([k, km]) => ({ name: k, km, n: gain(km) })).sort((a, b) => b.n - a.n);
   const streets = Object.entries(byStreet).map(([k, v]) => ({ name: k, km: v.km, n: gain(v.km), area: Object.keys(v.zones).map((q) => ZONES[q].split(',')[0]).join(' / ') })).sort((a, b) => b.n - a.n).slice(0, 8);
   const ctx = (CLK.curves ? (clkOn() ? DAYN[CLK.day] + ' ' + clkFmtTime(CLK.min) + (CLK.live ? ' (live, Maldives time)' : '') : 'time of day off') : '') + ' · fleet year ' + state.year + (state.yearCustom ? ' (edited)' : '');
-  return { bays, rows, tot, Z, levers, streets, closedAllKm: closedAll / 1000, openAllKm: openAll / 1000, eff, Lavg, ctx, allGain: gain(closedAll / 1000), cover: stats.effFP != null ? 0 : 0, areaM2, safe: state.safe };
+  return { bays, rows, tot, Z, levers, streets, closedAllKm: closedAll / 1000, openAllKm: openAll / 1000, eff, Lavg, ctx, plan, allGain: gain(closedAll / 1000), cover: stats.effFP != null ? 0 : 0, areaM2, safe: state.safe };
 }
 const rpPct = (a, b) => (b ? (100 * a / b).toFixed(1) + ' %' : '–');
 function rpRender() {
   const d = RP.data = rpCompute(), T = d.tot;
   $('rpCtx').textContent = d.ctx + ' · parking: ' + d.openAllKm.toFixed(1) + ' km of kerb open, ' + d.closedAllKm.toFixed(1) + ' km closed';
-  $('rpKpi').innerHTML = [['Requested', fmt(T.req), ''], ['On the street', fmt(T.on), rpPct(T.on, T.req)], ['Parked off-street', fmt(T.off), 'lots + garages you set: ' + fmt(offSupply())],
+  $('rpKpi').innerHTML = [['Requested', fmt(T.req), ''], ['On the street', fmt(T.on), rpPct(T.on, T.req)], ['Parked off-street', fmt(T.off), 'supply: ' + fmt(d.plan.capMoto + d.plan.capCar) + ' in lots + ' + fmt(d.plan.flexCap) + ' other'],
     ['No bay or room', fmt(T.nobay), rpPct(T.nobay, T.req)], ['… parked, no bay', fmt(T.shortP), ''], ['… moving, no lane', fmt(T.shortM), '']]
     .map((k, i) => `<div class="kpi${i === 3 && T.nobay ? ' bad' : ''}"><b>${k[1]}</b><span>${k[0]}</span><small>${k[2]}</small></div>`).join('');
   const mx = Math.max(1, ...d.rows.map((x) => x.req));
   $('rpBays').innerHTML = '<tr><th>Bays (report)</th><th>Bays</th><th>Parked demand now</th><th>Parked on kerb now</th><th>Demand beyond the bays</th></tr>' +
     ['Motorcycle-size (end-on, 1 m of kerb)', 'Car-size (shared by cars, pickups, vans, jeeps, trucks, lorries, buses …)'].map((nm, q) => { const y = d.bays[q]; return `<tr><td>${nm}</td><td>${fmt(y.bays)}</td><td>${fmt(y.dem)}</td><td>${fmt(y.on)}</td><td class="${y.dem > y.bays ? 'bad' : ''}">${fmt(Math.max(0, y.dem - y.bays))}</td></tr>`; }).join('');
+  $('rpLots').innerHTML = rpLotsHtml(d);
   $('rpTypes').innerHTML = '<tr><th>Vehicle type</th><th>Requested</th><th>On street</th><th>Off-street</th><th>No bay or room</th><th>Parked: no bay</th><th>Moving: no lane</th><th class="bar">On street / not</th></tr>' +
     d.rows.map((x) => `<tr><td><i class="sw2" style="background:${x.color}"></i>${esc(x.name)}</td><td>${fmt(x.req)}</td><td>${fmt(x.on)}</td><td>${fmt(x.off)}</td><td class="${x.nobay ? 'bad' : ''}">${fmt(x.nobay)} <small>${rpPct(x.nobay, x.req)}</small></td><td>${fmt(x.noP)}</td><td>${fmt(x.shortM)}</td>` +
       `<td class="bar"><div class="bb" style="width:${(100 * x.req / mx).toFixed(1)}%"><div class="ok" style="width:${x.req ? (100 * x.on / x.req).toFixed(1) : 0}%"></div></div></td></tr>`).join('') +
@@ -1113,8 +1235,23 @@ function rpRender() {
   const mvShort = T.shortM > 0 ? ` ${fmt(T.shortM)} moving vehicles found no free lane space.` : '';
   $('rpWhy').innerHTML = `<b>How to read this.</b> Vehicles may never overlap and may not stand inside a junction. ${fmt(T.shortP)} parked vehicles found no free kerb space.${mvShort} ` +
     '<br><b>Parking supply.</b> The report counts 132,230 motorcycle and 7,163 car parking slots, surveyed along the streets of Malé and Hulhumalé (about 0.65 per metre of kerb in both). The simulation therefore parks along kerbs, one vehicle deep, on the kerbs that rules leave open: motorcycles end-on (1 m of kerb each, as in HDC’s bay standard) and everything else lengthwise. Car-size bays are shared by cars, pickups, vans and all larger vehicles. With “Limit kerb parking to the report’s bays” on, kerb parking stops at the report’s numbers. ' +
-    'Off-street spaces are a setting: OpenStreetMap maps about 6 lots (around 1,100 spaces). <b>Private and residential garages cannot be estimated</b>: HDC declined to share the data, so they default to 0 and should be entered by the user once known. A vehicle with no bay, kerb or off-street space is assumed to park illegally, double-park or not use the road. ' +
+    (LOTS.list.length ? 'Off-street lots come from data/parking.json: ' + LOTS.list.length + ' lots, of which the statuses ticked in the panel are counted. Lots mapped in OpenStreetMap have a capacity estimated from their outline area unless a capacity is tagged; entries you added by hand are marked as such. ' : 'No lot outlines are loaded, so off-street space is the numeric setting only (OpenStreetMap tags capacity on about 6 lots, around 1,100 spaces). ') + '<b>Private and residential garages cannot be estimated</b>: HDC declined to share the data, so they default to 0 and should be entered by the user once known. A vehicle with no bay, kerb or off-street space is assumed to park illegally, double-park or not use the road. ' +
     'The areas are assigned by position on the map. The simulation does not assign vehicles to areas, so the shortfall is shown for the whole network, and the area table shows how full each area’s kerb is. Villimalé is not in the network file.';
+}
+function rpLotsHtml(d) {
+  if (!LOTS.list.length) return '<div class="note" style="margin:0">No lot outlines loaded. Run <code>python tools/export_parking.py</code> to build <code>data/parking.json</code> from OpenStreetMap and your own list.</div>';
+  const P = d.plan, fm = P.capMoto ? P.usedMoto / P.capMoto : 0, fc = P.capCar ? P.usedCar / P.capCar : 0;
+  const bas = { reported: 'reported', area: 'from area', manual: 'entered', none: '–' };
+  let sm = 0, sc2 = 0, su = 0;
+  const rows = LOTS.list.map((l, i) => {
+    const on = !!LOTS.inc[l.status], cap = l.cap.moto + l.cap.car, used = on ? l.cap.moto * fm + l.cap.car * fc : 0, f = cap ? used / cap : 0;
+    if (on) { sm += l.cap.moto; sc2 += l.cap.car; su += used; }
+    const cls = l.cap.moto && l.cap.car ? 'mixed' : l.cap.moto ? 'motorcycle' : l.cap.car ? 'car-size' : '–';
+    return `<tr${on ? '' : ' style="opacity:.5"'}><td><a href="#" class="lotgo" data-i="${i}">${esc(l.name)}</a></td><td>${esc(l.status)}${on ? '' : ' (not counted)'}</td><td>${cls}</td><td>${fmt(l.cap.moto)}</td><td>${fmt(l.cap.car)}</td><td>${on ? fmt(Math.round(used)) : '–'}</td><td class="${f > 0.97 ? 'bad' : ''}">${on && cap ? (f * 100).toFixed(0) + ' %' : '–'}</td><td>${bas[l.capSource] || esc(l.capSource || '')}${l.conf ? ' · ' + esc(l.conf) : ''}</td><td>${esc(l.src || '')}${l.note ? ' <small>' + esc(l.note) + '</small>' : ''}</td></tr>`;
+  });
+  return '<table><tr><th>Lot (click to zoom)</th><th>Status</th><th>Class</th><th>Motorcycle spaces</th><th>Car-size spaces</th><th>In use (est.)</th><th>Full</th><th>Capacity basis</th><th>Source</th></tr>' + rows.join('') +
+    `<tr class="tot"><td>Counted lots</td><td></td><td></td><td>${fmt(sm)}</td><td>${fmt(sc2)}</td><td>${fmt(Math.round(su))}</td><td>${sm + sc2 ? (100 * su / (sm + sc2)).toFixed(0) + ' %' : '–'}</td><td></td><td></td></tr></table>` +
+    '<div class="note">Vehicles that found no kerb space fill the lots of their class evenly (the model has no home address for a vehicle). A motorcycle lot takes only motorcycle-size vehicles; car-size lots take cars, pickups, vans and larger. Lots not ticked in the panel are listed but not counted.</div>';
 }
 function rpOpen() { RP.open = true; $('rp').hidden = false; document.body.classList.add('rpopen'); rpRender(); clearInterval(RP.timer); RP.timer = setInterval(rpRender, 1000); }
 function rpClose() { RP.open = false; $('rp').hidden = true; document.body.classList.remove('rpopen'); clearInterval(RP.timer); }
@@ -1130,11 +1267,14 @@ function rpCsv() {
   d.levers.forEach((x) => L.push([q(x.name), x.km.toFixed(2), x.n].join(',')));
   L.push('', 'Street,Area,Closed kerb km,Approx. more vehicles if re-opened');
   d.streets.forEach((x) => L.push([q(x.name), q(x.area), x.km.toFixed(2), x.n].join(',')));
+  if (LOTS.list.length) { L.push('', 'Off-street lot,Status,Counted,Motorcycle spaces,Car-size spaces,Capacity basis,Confidence,Source');
+    LOTS.list.forEach((l) => L.push([q(l.name), l.status, LOTS.inc[l.status] ? 'yes' : 'no', l.cap.moto, l.cap.car, l.capSource || '', l.conf || '', q(l.src || '')].join(','))); }
   const blob = new Blob([L.join('\n')], { type: 'text/csv' }), a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = 'placement-report.csv'; document.body.appendChild(a); a.click(); a.remove();
 }
 function rpBind() {
   $('rpClose').addEventListener('click', rpClose);
+  $('rpLots').addEventListener('click', (ev) => { const a = ev.target.closest('.lotgo'); if (!a) return; ev.preventDefault(); const l = LOTS.list[+a.dataset.i]; if (l) { cam.x = l.xy[0]; cam.y = l.xy[1]; cam.scale = Math.max(cam.scale, 6); needDraw = true; rpClose(); } });
   $('rp').addEventListener('click', (ev) => { if (ev.target === $('rp')) rpClose(); });
   $('rpCsv').addEventListener('click', rpCsv);
   $('rpPrint').addEventListener('click', () => window.print());
@@ -1329,7 +1469,7 @@ async function init() {
   buildTypeRows(); buildDims(); bindUI(); bindAdvisor(); bindFull(); safeInfo();
   resize();
   if (typeof ResizeObserver === 'function') new ResizeObserver(() => { resize(); }).observe(cv.parentElement);
-  const [rawNet, years] = await Promise.all([loadJson('data/network.json'), loadJson('data/years.json')]);
+  const [rawNet, years, parking] = await Promise.all([loadJson('data/network.json'), loadJson('data/years.json'), loadJson('data/parking.json')]);
   const raw = rawNet || GM.makeSyntheticNetwork();
   rawNetwork = raw;
   state.synthetic = !rawNet;
@@ -1341,6 +1481,7 @@ async function init() {
   }
   net = GM.prepareNetwork(raw);
   GM.applyRoadArea(net, state.areaKm2);
+  lotsInit(parking);
   npLoadFlow(); NP.bridge = npBridge(); NP.pk = npLoad(); npBind(); rpBind(); npRefresh(false);
 
   yearsCfg = years;
