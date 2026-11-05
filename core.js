@@ -31,7 +31,7 @@ GM.createRunner = function createRunner(post) {
   const cap = MAX_VEHICLES;
 
   /* ------------------------------ parameters ------------------------------ */
-  const P = { areaKm2: 0.894, parkShare: 0, parkShareT: null, parkStrip: 2.3, jam: 0.5, slow: false, patience: 5, safe: false, react: 1.5, mu: 0.6, idm: true, bayCap: false, bayMoto: 132230, bayCar: 7163 };
+  const P = { areaKm2: 0.894, parkShare: 0, parkShareT: null, parkStrip: 2.3, jam: 0.5, slow: false, patience: 5, safe: false, react: 1.5, mu: 0.6, idm: true, lotOrder: 'lot', bayCap: false, bayMoto: 132230, bayCar: 7163 };
   const C = { on: true, perDay: 0, secPerDay: 20 };
   const S = { simSpeed: 10, paused: false, hidden: false };
   const want = new Int32Array(nT), placed = new Int32Array(nT);
@@ -49,7 +49,7 @@ GM.createRunner = function createRunner(post) {
   }
   const FP = new Float32Array(nT), TV = new Float32Array(nT), HL = new Float32Array(nT),
         HW = new Float32Array(nT), RAD = new Float32Array(nT), VW = new Float32Array(nT);
-  const ENDON = new Uint8Array(nT);
+  const ENDON = new Uint8Array(nT), LENT = new Float32Array(nT);
   // IDM parameters per vehicle type: maximum acceleration A, comfortable braking B (m/s^2), time gap T (s), standstill gap S0 (m)
   const IA = new Float32Array(nT), IB = new Float32Array(nT), IT = new Float32Array(nT), IS0 = new Float32Array(nT);
   let RMAX = 0, pgen = 0;
@@ -59,7 +59,7 @@ GM.createRunner = function createRunner(post) {
       const L = d[t].L, W = d[t].W;
       FP[t] = L * W; TV[t] = d[t].v; VW[t] = W;
       HL[t] = L / 2 + PHYS.gap / 2; HW[t] = W / 2 + PHYS.gap / 2;
-      ENDON[t] = L <= 2.3 ? 1 : 0;       // motorcycle-size vehicles park end-on to the kerb (HDC bay: 1 m wide, 2 m deep)
+      LENT[t] = L; ENDON[t] = L <= 2.3 ? 1 : 0;       // motorcycle-size vehicles park end-on to the kerb (HDC bay: 1 m wide, 2 m deep)
       RAD[t] = Math.hypot(HL[t], HW[t]);
       // starting values from the car-following literature, by size class (to be calibrated)
       if (L <= 2.3)      { IA[t] = 2.5; IB[t] = 3.5; IT[t] = 0.9; IS0[t] = 0.8; }   // motorcycles, scooters, e-bikes
@@ -75,13 +75,14 @@ GM.createRunner = function createRunner(post) {
   /* ------------------------------ vehicles -------------------------------- */
   let net = null, G = null;
   let nv = 0;
-  let ve, vs, vdir, vjit, vtype, vlat, vpref, vpark, vside, vpg, vx, vy, vhx, vhy, vparked, vnx, gnext, vlane, vwait, vv, vq, vsf;
+  let ve, vs, vdir, vjit, vtype, vlat, vpref, vpark, vside, vpg, vx, vy, vhx, vhy, vparked, vnx, gnext, vlane, vwait, vv, vq, vsf, vlot;
+  // vlot = index of the lot bay a vehicle is parked in (-1: not in a lot). Lot vehicles are parked vehicles that stand off the road network.
   // IDM state: vv = speed (m/s), vq = the driver's personality factor (0.8 hurried .. 1.25 cautious), vsf = 1 when the last move was stopped by a full street ahead
   // vlane = sign of the lateral position (vlat) a moving vehicle keeps to, in the edge's forward frame.
   // Two-way street: always equal to vdir (drive on the left). One-way street (vdir is always +1): either
   // +1 (left half) or -1 (right half), so a one-way street is driven on over its full width.
   function allocate() {
-    vlane = new Int8Array(cap); vwait = new Float32Array(cap); vv = new Float32Array(cap); vq = new Float32Array(cap); vsf = new Uint8Array(cap);
+    vlane = new Int8Array(cap); vwait = new Float32Array(cap); vv = new Float32Array(cap); vq = new Float32Array(cap); vsf = new Uint8Array(cap); vlot = new Int32Array(cap).fill(-1);
     ve = new Int32Array(cap); vs = new Float32Array(cap); vdir = new Int8Array(cap); vjit = new Float32Array(cap);
     vtype = new Uint8Array(cap); vlat = new Float32Array(cap); vpref = new Float32Array(cap); vpark = new Float32Array(cap); vside = new Int8Array(cap);
     vpg = new Uint16Array(cap); vx = new Float32Array(cap); vy = new Float32Array(cap);
@@ -91,6 +92,7 @@ GM.createRunner = function createRunner(post) {
     ve[d] = ve[s]; vs[d] = vs[s]; vdir[d] = vdir[s]; vjit[d] = vjit[s]; vtype[d] = vtype[s]; vlat[d] = vlat[s]; vpref[d] = vpref[s];
     vpark[d] = vpark[s]; vside[d] = vside[s]; vpg[d] = vpg[s]; vx[d] = vx[s]; vy[d] = vy[s];
     vhx[d] = vhx[s]; vhy[d] = vhy[s]; vparked[d] = vparked[s]; vnx[d] = vnx[s]; vlane[d] = vlane[s]; vwait[d] = vwait[s]; vv[d] = vv[s]; vq[d] = vq[s]; vsf[d] = vsf[s];
+    vlot[d] = vlot[s]; if (vlot[d] >= 0) SO[vlot[d]] = d;      // a lot bay remembers who stands in it
   }
 
   /* ----------------------------- spatial hash ----------------------------- */
@@ -172,7 +174,7 @@ GM.createRunner = function createRunner(post) {
     if (!ch.length) return;
     const rm = [];
     for (let i = 0; i < nv; i++) {
-      if (net.cl[ve[i]]) {                                              // vehicle on a street that just closed: set it down elsewhere
+      if (net.cl[ve[i]] && vlot[i] < 0) {                               // vehicle on a street that just closed: set it down elsewhere
         const wasParked = vparked[i]; vparked[i] = 0;
         if (!relocate(i)) rm.push(i); else if (wasParked) vpg[i] = pgen;
       } else if (vnx[i] >= 0 && net.cl[vnx[i]]) vnx[i] = pickNext(vdir[i] === 1 ? net.v[ve[i]] : net.u[ve[i]], ve[i]);
@@ -191,13 +193,14 @@ GM.createRunner = function createRunner(post) {
     }
     if (any) {
       for (let i = 0; i < nv; i++) {                                   // street reversed: same place, mirrored coordinates
-        const e = ve[i]; if (!flipped[e]) continue;
+        const e = ve[i]; if (!flipped[e] || vlot[i] >= 0) continue;
         vs[i] = net.len[e] - vs[i]; vdir[i] = -vdir[i]; vside[i] = -vside[i];
         if (!vparked[i]) { vlat[i] = -vlat[i]; vlane[i] = -vlane[i]; }
       }
       const changed = GM.applyFlow(net, ow, fl);
       for (let i = 0; i < nv; i++) {
         const e = ve[i];
+        if (vlot[i] >= 0) continue;
         if (changed.indexOf(e) < 0 && vnx[i] !== -1 && changed.indexOf(vnx[i]) < 0) continue;
         if (changed.indexOf(e) >= 0) {
           let nd = vdir[i];
@@ -254,6 +257,99 @@ GM.createRunner = function createRunner(post) {
       if (s > hi) openRemove(k);
     }
     return false;
+  }
+
+  /* ------------------------------ off-street lots --------------------------------
+   * Every lot (data/parking.json) brings its bays: motorcycle bays (class 0) and car-size bays (class 1), each a pose
+   * (position and heading). A vehicle that parks in a lot is an ordinary parked vehicle standing in its bay, so it takes part in
+   * the same overlap test as everything else; it simply is not on the road network. Motorcycle-size vehicles use motorcycle
+   * bays; vehicles up to LOTMAXL metres use car-size bays; anything longer (trucks, lorries, buses) cannot use a lot.
+   * New parked vehicles take a kerb spot first, then the nearest lot with a free bay (P.lotOrder = 'lot': the other way round). */
+  const LOTMAXL = 5.6;
+  let LOT = [], SX = null, SY = null, SHX = null, SHY = null, SC = null, SLOT = null, SO = null, SFP = null, SLn = 0, lotUse = new Int32Array(0), LSL = -1;
+  function nearestEdgePoint(x, y) {                                    // nearest street (index, arc length from its start) to a point
+    let be = 0, bs = 0, bd = Infinity;
+    for (let e = 0; e < net.E; e++) {
+      const o = net.off[e], last = net.off[e + 1] - 1;
+      if (x < net.bx0[e] - 60 || x > net.bx1[e] + 60 || y < net.by0[e] - 60 || y > net.by1[e] + 60) continue;
+      for (let k = o; k < last; k++) {
+        const ax = net.px[k], ay = net.py[k], dx = net.px[k + 1] - ax, dy = net.py[k + 1] - ay, l2 = dx * dx + dy * dy;
+        let u = l2 > 1e-9 ? ((x - ax) * dx + (y - ay) * dy) / l2 : 0; u = u < 0 ? 0 : u > 1 ? 1 : u;
+        const qx = ax + u * dx - x, qy = ay + u * dy - y, d2 = qx * qx + qy * qy;
+        if (d2 < bd) { bd = d2; be = e; bs = net.cum[k] + u * Math.sqrt(l2); }
+      }
+    }
+    return { e: be, s: bs, d: Math.sqrt(bd) };
+  }
+  function setLots(spec) {
+    LOT = []; SLn = 0;
+    const lots = spec && Array.isArray(spec.lots) ? spec.lots : [], on = spec && spec.on || [];
+    let n = 0;
+    for (const l of lots) n += ((l.bays && l.bays.moto ? l.bays.moto.length : 0) + (l.bays && l.bays.car ? l.bays.car.length : 0)) / 3;
+    SX = new Float32Array(n); SY = new Float32Array(n); SHX = new Float32Array(n); SHY = new Float32Array(n);
+    SC = new Uint8Array(n); SLOT = new Int32Array(n); SO = new Int32Array(n).fill(-1); SFP = new Int32Array(n).fill(-1);
+    lots.forEach((l, li) => {
+      if (!net || !l.bays) return;
+      let best = null;                                                  // access street: the street nearest to the lot's outline
+      const pts = (l.poly || []).concat([l.xy]);
+      for (const q of pts) { const r = nearestEdgePoint(q[0], q[1]); if (!best || r.d < best.d) best = r; }
+      if (!best) return;
+      const zb = stopDist(best.e), as = Math.max(zb, Math.min(net.len[best.e] - zb, best.s));
+      const L = { name: l.name, x: l.xy[0], y: l.xy[1], ae: best.e, as, on: on[li] !== false && on[li] !== 0, fm: [], fc: [], nm: 0, nc: 0 };
+      const li2 = LOT.length; LOT.push(L); L.src = li;
+      for (const cls of [0, 1]) {
+        const b = cls ? l.bays.car : l.bays.moto;
+        for (let k = 0; k + 2 < (b ? b.length : 0); k += 3) {
+          const sl = SLn++, a = b[k + 2] > 0 ? l.ang : l.ang + Math.PI;
+          SX[sl] = b[k]; SY[sl] = b[k + 1]; SHX[sl] = Math.cos(a); SHY[sl] = Math.sin(a); SC[sl] = cls; SLOT[sl] = li2;
+          if (cls) L.nc++; else L.nm++;
+        }
+      }
+    });
+    lotUse = new Int32Array(2 * LOT.length);
+    lotsFreeAll();
+  }
+  function lotsFreeAll() {                                              // every bay empty (used when all vehicles are placed afresh)
+    for (const L of LOT) { L.fm = []; L.fc = []; }
+    for (let sl = 0; sl < SLn; sl++) { const L = LOT[SLOT[sl]], lst = SC[sl] ? L.fc : L.fm; SFP[sl] = lst.length; lst.push(sl); SO[sl] = -1; }
+    for (let i = 0; i < nv; i++) vlot[i] = -1;
+  }
+  function slotTake(sl) { const L = LOT[SLOT[sl]], lst = SC[sl] ? L.fc : L.fm, p = SFP[sl], last = lst.pop(); if (last !== sl) { lst[p] = last; SFP[last] = p; } SFP[sl] = -1; }
+  function slotGive(sl) { const L = LOT[SLOT[sl]], lst = SC[sl] ? L.fc : L.fm; SFP[sl] = lst.length; lst.push(sl); }
+  function lotRelease(i) { const sl = vlot[i]; if (sl < 0) return; SO[sl] = -1; vlot[i] = -1; slotGive(sl); }
+  // Nearest enabled lot with a free bay for a vehicle of type t, near the point (px, py) (NaN = a random place on the network);
+  // returns the bay and leaves the bay's pose in PX/PY/PHX/PHY when the vehicle fits there without touching anything.
+  function lotSpot(t, px, py, self) {
+    if (!LOT.length || (!ENDON[t] && LENT[t] > LOTMAXL)) return -1;
+    if (!(px === px)) { const e0 = sampleEdge(); poseAt(e0, net.len[e0] * 0.5, 1, 0); px = PX; py = PY; }
+    const cls = ENDON[t] ? 0 : 1;
+    let best = -1, bd = Infinity;
+    for (let l = 0; l < LOT.length; l++) {
+      const L = LOT[l]; if (!L.on || !(cls ? L.fc.length : L.fm.length)) continue;
+      const d = (L.x - px) * (L.x - px) + (L.y - py) * (L.y - py);
+      if (d < bd) { bd = d; best = l; }
+    }
+    if (best < 0) return -1;
+    const lst = cls ? LOT[best].fc : LOT[best].fm;
+    for (let a = 0; a < 8; a++) {
+      const sl = lst[(Math.random() * lst.length) | 0];
+      PX = SX[sl]; PY = SY[sl]; PHX = SHX[sl]; PHY = SHY[sl];
+      if (!overlapsAny(PX, PY, PHX, PHY, t, self)) return sl;
+    }
+    return -1;
+  }
+  function parkInLot(i, sl) {                                          // vehicle i takes bay sl (its pose is already in PX/PY/PHX/PHY)
+    const L = LOT[SLOT[sl]];
+    slotTake(sl); SO[sl] = i; vlot[i] = sl;
+    commitPose(i, L.ae, L.as, 1, 0);
+    vside[i] = 0; vparked[i] = 1; vpg[i] = pgen; vwait[i] = 0; vv[i] = 0; vsf[i] = 0;
+  }
+  // Which kind of place does a vehicle that wants to park find? 0 none, 1 kerb (KE/KS/KSIDE/KROW set), 2 lot (LSL set, pose in PX..).
+  function seekPark(t, self, px, py) {
+    if (P.lotOrder === 'lot') { const sl = lotSpot(t, px, py, self); if (sl >= 0) { LSL = sl; return 2; } }
+    if (parkSpot(t, self)) return 1;
+    if (P.lotOrder !== 'lot') { const sl = lotSpot(t, px, py, self); if (sl >= 0) { LSL = sl; return 2; } }
+    return 0;
   }
 
   // Safe spacing: is the stretch of road ahead of a moving vehicle (length g) free of vehicles travelling the same way?
@@ -332,9 +428,12 @@ GM.createRunner = function createRunner(post) {
     if (nv >= cap) return false;
     const pv = wantPark ? Math.random() * PS[t] : PS[t] + (1 - PS[t]) * Math.random();
     let e, sPos, dir, lat = 0, side = 0, lane = 1;
+    let bay = -1;
     if (wantPark) {
-      if (!parkSpot(t, -1)) return false;
-      e = KE; sPos = KS; side = KSIDE; lat = KROW; dir = parkHeading(e, side);
+      const kind = seekPark(t, -1, NaN, NaN);
+      if (!kind) return false;
+      if (kind === 1) { e = KE; sPos = KS; side = KSIDE; lat = KROW; dir = parkHeading(e, side); }
+      else { bay = LSL; const L = LOT[SLOT[bay]]; e = L.ae; sPos = L.as; side = 0; lat = 0; dir = 1; }
     } else {
       let ok = false;
       for (let k = 0; k < PHYS.tries && !ok; k++) {
@@ -352,7 +451,9 @@ GM.createRunner = function createRunner(post) {
     ve[i] = e; vs[i] = sPos; vdir[i] = dir; vlat[i] = lat; vpref[i] = Math.abs(lat) || 0.55; vside[i] = side; vtype[i] = t;
     vjit[i] = 0.8 + 0.4 * Math.random(); vq[i] = 0.8 + 0.45 * Math.random(); vsf[i] = 0; vv[i] = wantPark ? 0 : TV[t] * vjit[i] * 0.6; vpark[i] = pv; vpg[i] = pgen; vparked[i] = wantPark ? 1 : 0;
     vx[i] = PX; vy[i] = PY; vhx[i] = PHX; vhy[i] = PHY; vnx[i] = pickNext(dir === 1 ? net.v[e] : net.u[e], e);
+    vlot[i] = -1;
     gridLink(i, cellIdx(vx[i], vy[i])); nv++;
+    if (bay >= 0) { slotTake(bay); SO[bay] = i; vlot[i] = bay; }
     return true;
   }
 
@@ -362,9 +463,15 @@ GM.createRunner = function createRunner(post) {
   // every other vehicle (cars, pickups, vans, jeeps, trucks ...) shares the car bays. When P.bayCap is on, kerb parking stops at those numbers.
   const classP = [0, 0];
   const bayFull = (t) => P.bayCap && (ENDON[t] ? classP[0] >= P.bayMoto : classP[1] >= P.bayCar);
+  const curL = new Int32Array(nT);
   function countTypes() {
-    curP.fill(0); curM.fill(0); classP[0] = classP[1] = 0;
-    for (let i = 0; i < nv; i++) { if (vparked[i]) { curP[vtype[i]]++; classP[ENDON[vtype[i]] ? 0 : 1]++; } else curM[vtype[i]]++; }
+    curP.fill(0); curM.fill(0); curL.fill(0); classP[0] = classP[1] = 0; lotUse.fill(0);
+    for (let i = 0; i < nv; i++) {
+      if (vparked[i]) {
+        curP[vtype[i]]++;
+        if (vlot[i] >= 0) { curL[vtype[i]]++; lotUse[SLOT[vlot[i]] * 2 + SC[vlot[i]]]++; } else classP[ENDON[vtype[i]] ? 0 : 1]++;
+      } else curM[vtype[i]]++;
+    }
     for (let t = 0; t < nT; t++) placed[t] = curP[t] + curM[t];
   }
   const tgtP = (t) => Math.round(want[t] * PS[t]);
@@ -395,7 +502,7 @@ GM.createRunner = function createRunner(post) {
   function removeVehicles(t, k) {
     for (let i = nv - 1; i >= 0 && k > 0; i--) {
       if (vtype[i] !== t) continue;
-      if (vparked[i]) kerbFreed(ve[i], vside[i], Math.max(0, vs[i] - 2 * HL[t]));
+      if (vparked[i]) { if (vlot[i] >= 0) lotRelease(i); else kerbFreed(ve[i], vside[i], Math.max(0, vs[i] - 2 * HL[t])); }
       const last = nv - 1;
       if (i !== last) copyVeh(i, last);
       nv--; k--;
@@ -425,7 +532,7 @@ GM.createRunner = function createRunner(post) {
   // Full re-placement (street widths or vehicle dimensions changed, so old poses may now overlap).
   function replaceAll() {
     retryGap = 1000; retryAt = 0;
-    nv = 0; placed.fill(0); G.head.fill(-1); kerbRebuild();
+    nv = 0; placed.fill(0); G.head.fill(-1); kerbRebuild(); lotsFreeAll();
     updateRmax();
     fillDeficits(Infinity, Infinity);
     covStale = true;
@@ -446,7 +553,30 @@ GM.createRunner = function createRunner(post) {
     }
     return false;
   }
+  // A vehicle leaves its lot bay: it drives out onto the lot's access street (or, if that is closed, appears elsewhere on the network).
+  function lotLeave(i) {
+    const e = ve[i], s = vs[i], t = vtype[i];
+    if (net.cl[e]) {
+      if (!relocate(i)) return false;
+      lotRelease(i); vparked[i] = 0; vv[i] = 0; vsf[i] = 0; return true;
+    }
+    const dirs = net.ow[e] ? [1] : (Math.random() < 0.5 ? [1, -1] : [-1, 1]);
+    for (const dir of dirs) {
+      const lane = net.ow[e] ? (Math.random() < 0.5 ? 1 : -1) : dir;
+      for (let a = 0; a < FREE_LATS.length; a++) {
+        const lat = lane * FREE_LATS[a];
+        poseMoving(e, s, dir, lat, t);
+        if (overlapsAny(PX, PY, PHX, PHY, t, i)) continue;
+        lotRelease(i);
+        commitPose(i, e, s, dir, lat); vlane[i] = lane; vpref[i] = FREE_LATS[a]; vside[i] = 0; vparked[i] = 0; vwait[i] = 0; vv[i] = 0; vsf[i] = 0;
+        vnx[i] = pickNext(dir === 1 ? net.v[e] : net.u[e], e);
+        return true;
+      }
+    }
+    return false;
+  }
   function toMoving(i) {
+    if (vlot[i] >= 0) return lotLeave(i);
     const e = ve[i], s = vs[i], t = vtype[i], dir = vdir[i], wasP = vparked[i], sd = vside[i];
     const lane = net.ow[e] ? (Math.random() < 0.5 ? 1 : -1) : dir;     // one-way: either half; two-way: keep left
     for (let a = 0; a < FREE_LATS.length; a++) {
@@ -470,11 +600,16 @@ GM.createRunner = function createRunner(post) {
   let balAt = 0, retryAt = 0, retryGap = 1000, cursor = 0;
   const surM = new Int32Array(nT), surP = new Int32Array(nT);
   function toParkedSeek(i) {
+    const t = vtype[i];
+    if (P.lotOrder === 'lot') { const sl = lotSpot(t, vx[i], vy[i], i); if (sl >= 0) { parkInLot(i, sl); return true; } }
     if (toParked(i)) return true;                                   // right where it stands, either kerb side
-    if (!parkSpot(vtype[i], i)) return false;                       // otherwise look for a free kerb spot elsewhere
-    commitPose(i, KE, KS, parkHeading(KE, KSIDE), KROW);
-    vside[i] = KSIDE; vparked[i] = 1; vpg[i] = pgen; vwait[i] = 0;
-    return true;
+    if (parkSpot(t, i)) {                                           // otherwise look for a free kerb spot elsewhere
+      commitPose(i, KE, KS, parkHeading(KE, KSIDE), KROW);
+      vside[i] = KSIDE; vparked[i] = 1; vpg[i] = pgen; vwait[i] = 0;
+      return true;
+    }
+    if (P.lotOrder !== 'lot') { const sl = lotSpot(t, vx[i], vy[i], i); if (sl >= 0) { parkInLot(i, sl); return true; } }   // no kerb space: nearest lot
+    return false;
   }
   function balance(t0) {
     if (!net || t0 - balAt < 250) return false;
@@ -492,7 +627,8 @@ GM.createRunner = function createRunner(post) {
       if (cursor >= nv) cursor = 0;
       const i = cursor++, t = vtype[i];
       if (vparked[i]) {
-        if (isBanned(ve[i], vside[i])) { if (toMoving(i)) changed = true; }      // parked on a kerb that is now closed: pull out
+        if (vlot[i] >= 0) { if (surP[t] > 0 && toMoving(i)) { surP[t]--; changed = true; } }   // parked in a lot: only leaves when the clock asks for fewer parked vehicles
+        else if (isBanned(ve[i], vside[i])) { if (toMoving(i)) changed = true; }      // parked on a kerb that is now closed: pull out
         else if (surP[t] > 0) { if (toMoving(i)) { surP[t]--; changed = true; } }
         else if (vpg[i] !== pgen) { if (reposePark(i)) changed = true; }
       } else if (surM[t] > 0) {
@@ -741,7 +877,7 @@ GM.createRunner = function createRunner(post) {
     for (let i = 0; i < nv; i++) {
       const t = vtype[i];
       let f = FP[t];
-      if (vparked[i]) { parkedN++; parkedFP += f; effFP += f; occ[ve[i]] += f; continue; }
+      if (vparked[i]) { parkedN++; if (vlot[i] < 0) { parkedFP += f; effFP += f; occ[ve[i]] += f; } continue; }   // vehicles in lots are off the road area
       if (safe) {
         const v = TV[t] * (spd[ve[i]] || 1), g = v * react + v * v / (2 * mu * 9.81);
         const extra = VW[t] * g; f += extra; gapFP += extra;
@@ -816,7 +952,7 @@ GM.createRunner = function createRunner(post) {
     }
     const moving = nv - parkedN;
     const stats = {
-      mv: S.paused || !last.mv ? moving : Math.round(last.mv), parkedN, parkedFP, effFP, gapFP, pt: Array.from(curP), mt: Array.from(curM),
+      mv: S.paused || !last.mv ? moving : Math.round(last.mv), parkedN, parkedFP, effFP, gapFP, pt: Array.from(curP), mt: Array.from(curM), lt: Array.from(curL), lu: Array.from(lotUse), lotBays: LOT.map((L) => [L.src, L.nm, L.nc]),
       blockedN: Math.min(last.blocked, moving), sumV: last.sumV, sumF: last.sumF, congArea, placedN: nv, relocN, simT,
     };
     const m = markers; markers = [];
@@ -853,6 +989,7 @@ GM.createRunner = function createRunner(post) {
     const slot = new Int16Array(E).fill(-1); pick.forEach((e, k) => { slot[e] = k; });
     const comp = new Int32Array(pick.length * nT), parkedC = new Int32Array(pick.length), cnt = new Int32Array(pick.length);
     for (let i = 0; i < nv; i++) {
+      if (vlot[i] >= 0) continue;
       const k = slot[ve[i]]; if (k < 0) continue;
       cnt[k]++; if (vparked[i]) parkedC[k]++; else comp[k * nT + vtype[i]]++;
     }
@@ -954,7 +1091,7 @@ GM.createRunner = function createRunner(post) {
 
   /* ---------------------------------- messages ------------------------------- */
   function applyParams(p) {
-    const oldArea = P.areaKm2, oldStrip = P.parkStrip, oldBay = P.bayCap + '/' + P.bayMoto + '/' + P.bayCar;
+    const oldArea = P.areaKm2, oldStrip = P.parkStrip, oldBay = P.bayCap + '/' + P.bayMoto + '/' + P.bayCar + '/' + P.lotOrder;
     Object.assign(P, p.P); Object.assign(C, p.C);
     if (updatePS()) dirty = true;
     S.simSpeed = p.simSpeed; S.paused = !!p.paused; S.hidden = !!p.hidden;
@@ -962,7 +1099,7 @@ GM.createRunner = function createRunner(post) {
     if (net) {
       if (Math.abs(P.areaKm2 - oldArea) > 1e-9) { GM.applyRoadArea(net, P.areaKm2); layoutAt = nowMs(); }
       if (P.parkStrip !== oldStrip) pgen = (pgen + 1) & 0xffff;
-      if (nv > 0 && oldBay !== P.bayCap + '/' + P.bayMoto + '/' + P.bayCar) replaceAll();   // bay limits changed: park everybody again under the new limits
+      if (nv > 0 && oldBay !== P.bayCap + '/' + P.bayMoto + '/' + P.bayCar + '/' + P.lotOrder) replaceAll();   // bay limits changed: park everybody again under the new limits
     }
     covStale = true; dirty = true;
   }
@@ -977,6 +1114,7 @@ GM.createRunner = function createRunner(post) {
     setDims(m.dims);
     allocate(); buildGrid(net.bounds);
     kerbRebuild();
+    setLots(m.lots);
   }
 
   function init(m) {
@@ -993,6 +1131,7 @@ GM.createRunner = function createRunner(post) {
         case 'init': init(m); break;
         case 'params': applyParams(m.p); break;
         case 'noPark': setNoPark(m.mask); break;
+        case 'lotsOn': if (net) { m.on.forEach((v, k) => { for (const L of LOT) if (L.src === k) L.on = !!v; }); replaceAll(); dirty = true; } break;
         case 'streets': setStreets(m.ow, m.fl, m.mask, m.cl); break;
         case 'counts': pendCounts = m.counts; break;                // latest wins; applied at the next loop iteration
         case 'dims': setDims(m.dims); updateRmax(); layoutAt = nowMs(); dirty = true; break;

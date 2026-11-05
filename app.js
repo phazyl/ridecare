@@ -51,7 +51,7 @@ const counts = new Int32Array(nT);   // requested per type (what the sliders say
 const placed = new Int32Array(nT);   // reported by the worker: actually on the street, never overlapping
 const state = {
   areaKm2: AREA.osmnx, parkShare: DEFAULTS.parkShare / 100, parkStrip: DEFAULTS.parkStrip,
-  safe: false, react: 1.5, mu: 0.6, idm: true, bayCap: true, bayMoto: 132230, bayCar: 7163, offLots: 1111, offPriv: 0,
+  safe: false, react: 1.5, mu: 0.6, idm: true, lotFirst: true, bayCap: true, bayMoto: 132230, bayCar: 7163, offLots: 1111, offPriv: 0,
   jam: DEFAULTS.jam, patience: DEFAULTS.patience, simSpeed: DEFAULTS.simSpeed, dotPx: DEFAULTS.dotPx,
   paused: false, heat: true, slow: false, synthetic: false,
   year: 2024, yearCustom: false, advBusy: false,
@@ -75,11 +75,13 @@ const FP = (t) => TYPES[t].L * TYPES[t].W;
 function paramsMsg() {
   const A = expectedPerYear(requestedTotal(), state.beta);
   return {
-    P: { areaKm2: state.areaKm2, parkShare: state.parkShare, parkShareT: clkParkArr(), parkStrip: state.parkStrip, jam: state.jam, slow: state.slow, patience: state.patience, safe: state.safe, react: state.react, mu: state.mu, idm: state.idm, bayCap: state.bayCap, bayMoto: state.bayMoto, bayCar: state.bayCar },
+    P: { areaKm2: state.areaKm2, parkShare: state.parkShare, parkShareT: clkParkArr(), parkStrip: state.parkStrip, jam: state.jam, slow: state.slow, patience: state.patience, safe: state.safe, react: state.react, mu: state.mu, idm: state.idm, lotOrder: state.lotFirst ? 'lot' : 'kerb', bayCap: state.bayCap, bayMoto: state.bayMoto, bayCar: state.bayCar },
     C: { on: state.colOn, perDay: A / 365 * clkExposure(), secPerDay: clkSecPerDay() },
     simSpeed: state.simSpeed, paused: state.paused || state.advBusy, hidden: typeof document !== 'undefined' && !!document.hidden,
   };
 }
+const engLots = () => ({ lots: LOTS.eng.map((l) => ({ name: l.name, xy: l.xy, poly: l.poly, ang: l.ang, bays: l.bays })), on: LOTS.eng.map((l) => !!LOTS.inc[l.status]) });
+const pushLotsOn = () => { if (sim) sim.post({ cmd: 'lotsOn', on: LOTS.eng.map((l) => !!LOTS.inc[l.status]) }); };
 const pushParams = () => { if (sim) sim.post({ cmd: 'params', p: paramsMsg() }); };
 const pushCounts = () => { if (sim) { sim.post({ cmd: 'counts', counts: Array.from(counts) }); pushParams(); } };
 const pushDims = () => { if (sim) sim.post({ cmd: 'dims', dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })) }); needDraw = true; };
@@ -645,7 +647,7 @@ function drawLots(sc, cx, cy, hw, hh) {
   ctx.lineJoin = 'round'; ctx.lineWidth = 1.5; ctx.font = '11px system-ui, sans-serif'; ctx.textAlign = 'center';
   for (const l of LOTS.list) {
     if (l.bb[2] < wx0 || l.bb[0] > wx1 || l.bb[3] < wy0 || l.bb[1] > wy1) continue;
-    const on = !!LOTS.inc[l.status], cap = l.cap.moto + l.cap.car, f = !on || !cap ? 0 : (l.cap.moto * fm + l.cap.car * fc) / cap;
+    const on = !!LOTS.inc[l.status], cap = l.cap.moto + l.cap.car, U = lotUsed(l), bn = U ? U.nm + U.nc : 0, f = !on || !cap ? 0 : U ? (bn ? (U.m + U.c) / bn : 0) : (l.cap.moto * fm + l.cap.car * fc) / cap;
     const col = !on ? '#8b98a8' : !cap ? '#a371f7' : f >= 0.97 ? '#f85149' : f >= 0.6 ? '#e3a008' : '#3fb950';
     const sw = (l.bb[2] - l.bb[0]) * sc, sh = (l.bb[3] - l.bb[1]) * sc, [mx, my] = S(l.xy[0], l.xy[1]);
     ctx.strokeStyle = col; ctx.fillStyle = col;
@@ -659,7 +661,7 @@ function drawLots(sc, cx, cy, hw, hh) {
     ctx.closePath();
     ctx.globalAlpha = on ? 0.16 : 0.06; ctx.fill();
     ctx.globalAlpha = on ? 0.95 : 0.6; ctx.setLineDash(!on || l.schematic ? [5, 4] : []); ctx.stroke(); ctx.setLineDash([]);
-    if (on && f > 0 && Math.max(sw, sh) > 14) {                    // parked vehicles: one dot per space, filled in order
+    if (!l.bays && on && f > 0 && Math.max(sw, sh) > 14) {                    // parked vehicles: one dot per space, filled in order
       if (!l.g) lotGrid(l);
       const nm = Math.round(l.gm * fm), tot = l.g.length / 2, nc = Math.round((tot - l.gm) * fc), d = Math.max(1.6, Math.min(5, 1.1 * sc));
       ctx.globalAlpha = 0.95;
@@ -960,6 +962,7 @@ function bindUI() {
   $('offPrivNum').addEventListener('input', (ev) => { const v = parseInt(ev.target.value, 10); if (v >= 0) { state.offPriv = v; needDraw = true; } });
   $('stripNum').addEventListener('input', (ev) => { const v = parseFloat(ev.target.value); if (v > 0) { state.parkStrip = v; pushParams(); } });
   $('patRange').addEventListener('input', (ev) => { state.patience = +ev.target.value; $('patOut').textContent = state.patience ? state.patience + ' s' : 'off'; pushParams(); });
+  $('lotFirstChk').addEventListener('change', (ev) => { state.lotFirst = ev.target.checked; pushParams(); });
   $('idmChk').addEventListener('change', (ev) => { state.idm = ev.target.checked; pushParams(); });
   $('safeChk').addEventListener('change', (ev) => { state.safe = ev.target.checked; $('safeBox').hidden = !state.safe; safeInfo(); pushParams(); });
   $('reactNum').addEventListener('input', (ev) => { const v = parseFloat(ev.target.value); if (v >= 0 && v <= 4) { state.react = v; safeInfo(); pushParams(); } });
@@ -1034,8 +1037,8 @@ function updateStats() {
   if (useSafe) $('sGap').textContent = (stats.gapFP / areaM2 * 100).toFixed(1) + ' %  (' + fmt(stats.gapFP) + ' m²)';
   $('sParkFoot').textContent = (stats.parkedFP / areaM2 * 100).toFixed(1) + ' %';
   $('sVeh').textContent = fmt(total) + '  (' + fmt(stats.mv) + ' / ' + fmt(stats.parkedN) + ')';
-  const plan = LOTS.plan = offPlan(), offN = Math.min(plan.total, Math.max(0, req - total)), unfit = Math.max(0, req - total - offN);
-  $('sPlaced').textContent = fmt(total) + ' of ' + fmt(req) + ' on street' + (offN ? ' · ' + fmt(offN) + ' off-street' : '') + (unfit > 0 ? ' · ' + fmt(unfit) + ' no bay' : '');
+  const plan = LOTS.plan = offPlan(), offN = Math.min(plan.total, Math.max(0, req - total)), unfit = Math.max(0, req - total - offN), inLots = stats.lt ? stats.lt.reduce((a, b) => a + b, 0) : 0;
+  $('sPlaced').textContent = fmt(total - inLots) + ' of ' + fmt(req) + ' on street' + (offN + inLots ? ' · ' + fmt(offN + inLots) + ' off-street' : '') + (unfit > 0 ? ' · ' + fmt(unfit) + ' no bay' : '');
   $('sPlaced').style.color = unfit > 0 ? '#f85149' : '';
   updateNoRoom(unfit, req, areaM2);
   $('sBlocked').textContent = stats.mv ? (stats.blockedN / stats.mv * 100).toFixed(0) + ' % waiting' : '–';
@@ -1067,15 +1070,22 @@ function updateStats() {
  *   flex   - plain numbers any vehicle can use: "other off-street spaces" and private/residential garages.
  * Parked vehicles that found no kerb space go to the lots first, then to the flexible spaces. The model has no home address for a
  * vehicle, so every lot of a class fills evenly (same % full). */
-const LOTS = { list: [], show: true, inc: { existing: true, temporary: true, planned: false, unverified: false }, plan: null, key: 'gm_lots_v1', pending: 0, meta: null };
+const LOTS = { list: [], show: true, inc: { existing: true, temporary: true, planned: false, unverified: false }, plan: null, key: 'gm_lots_v1', pending: 0, meta: null, eng: [] };
 const isMotoT = (t) => TYPES[t].L <= 2.3;
-function lotCaps() {
+function lotCaps(all) {                                             // lots with drawn bays are filled by the engine; only their un-drawn extra capacity is left to the accounting
   let moto = 0, car = 0;
-  for (const l of LOTS.list) if (LOTS.inc[l.status]) { moto += l.cap.moto; car += l.cap.car; }
+  for (const l of LOTS.list) if (LOTS.inc[l.status]) {
+    if (l.bays && !all) { moto += l.extra ? l.extra.moto | 0 : 0; car += l.extra ? l.extra.car | 0 : 0; } else { moto += l.cap.moto; car += l.cap.car; }
+  }
   return { moto, car };
 }
+function lotUsed(l) {                                               // vehicles standing in this lot's bays right now (engine count), or null
+  const lb = stats.lotBays, lu = stats.lu; if (!l.bays || !lb || !lu) return null;
+  const k = lb.findIndex((r) => r[0] === l.ei); if (k < 0) return null;
+  return { m: lu[2 * k], c: lu[2 * k + 1], nm: lb[k][1], nc: lb[k][2] };
+}
 const offFlex = () => Math.max(0, state.offLots) + Math.max(0, state.offPriv);
-const offSupply = () => { const c = lotCaps(); return offFlex() + c.moto + c.car; };
+const offSupply = () => { const c = lotCaps(true); return offFlex() + c.moto + c.car; };
 function shortPByType() {                                           // parked vehicles that found no kerb space, by type
   const haveSplit = stats.pt && stats.pt.length === nT, out = new Array(nT).fill(0);
   for (let t = 0; t < nT; t++) {
@@ -1112,6 +1122,7 @@ function lotsInit(pk) {
     l.bb = [x0, y0, x1, y1]; l.m2 = lotArea(l);
   }
   LOTS.list.sort((a, b) => (b.cap.moto + b.cap.car) - (a.cap.moto + a.cap.car));
+  LOTS.eng = LOTS.list.filter((l) => l.bays && typeof l.ang === 'number'); LOTS.eng.forEach((l, i) => { l.ei = i; });
   try { const v = JSON.parse(localStorage.getItem(LOTS.key) || 'null'); if (v && v.inc) Object.assign(LOTS.inc, v.inc); if (v && typeof v.show === 'boolean') LOTS.show = v.show; } catch (e) { /* storage unavailable */ }
   state.offLots = 0; $('offLotsNum').value = 0;                      // the lots replace the single "OSM lots" figure
   $('offLotsLbl').textContent = 'Other off-street spaces not in the lot list (any vehicle)';
@@ -1119,7 +1130,7 @@ function lotsInit(pk) {
   const ids = { existing: 'lotExist', temporary: 'lotTemp', planned: 'lotPlan', unverified: 'lotUnv' };
   for (const st of Object.keys(ids)) {
     const el = $(ids[st]); el.checked = !!LOTS.inc[st];
-    el.addEventListener('change', () => { LOTS.inc[st] = el.checked; lotsSave(); lotsSummary(); needDraw = true; });
+    el.addEventListener('change', () => { LOTS.inc[st] = el.checked; lotsSave(); lotsSummary(); pushLotsOn(); needDraw = true; });
   }
   $('lotShow').checked = LOTS.show;
   $('lotShow').addEventListener('change', (ev) => { LOTS.show = ev.target.checked; lotsSave(); needDraw = true; });
@@ -1130,7 +1141,7 @@ function lotsSummary() {
   const by = {}; for (const l of LOTS.list) { const b = by[l.status] || (by[l.status] = { n: 0, m: 0, c: 0 }); b.n++; b.m += l.cap.moto; b.c += l.cap.car; }
   const ids = { existing: 'lotExistN', temporary: 'lotTempN', planned: 'lotPlanN', unverified: 'lotUnvN' };
   for (const st of Object.keys(ids)) { const b = by[st] || { n: 0, m: 0, c: 0 }; $(ids[st]).textContent = b.n ? '· ' + b.n + ' lot' + (b.n > 1 ? 's' : '') + ': ' + fmt(b.m) + ' motorcycle + ' + fmt(b.c) + ' car spaces' : '· none'; }
-  const c = lotCaps(), nocap = LOTS.list.filter((l) => LOTS.inc[l.status] && !(l.cap.moto + l.cap.car)).length;
+  const c = lotCaps(true), nocap = LOTS.list.filter((l) => LOTS.inc[l.status] && !(l.cap.moto + l.cap.car)).length;
   $('lotsNote').innerHTML = 'Counted now: <b>' + fmt(c.moto) + '</b> motorcycle and <b>' + fmt(c.car) + '</b> car-size spaces in lots.' +
     (nocap ? ' ' + nocap + ' ticked lot' + (nocap > 1 ? 's have' : ' has') + ' no capacity yet.' : '') +
     (LOTS.pending ? ' ' + LOTS.pending + ' listed lot' + (LOTS.pending > 1 ? 's await' : ' awaits') + ' coordinates in tools/parking_manual.csv.' : '') +
@@ -1166,18 +1177,18 @@ function rpCompute() {
   const haveSplit = stats.pt && stats.mt && stats.pt.length === nT;
   const pt = TYPES.map((_, t) => (haveSplit ? stats.pt[t] : Math.round(placed[t] * (stats.parkedN / Math.max(1, placedTotal()))))), mt = TYPES.map((_, t) => placed[t] - pt[t]);
   const rows = TYPES.map((tp, t) => {
-    const req = counts[t], on = placed[t], short = Math.max(0, req - on);
-    return { t, name: tp.name, color: tp.color, req, on, short, shortP: Math.max(0, tP[t] - pt[t]), shortM: Math.max(0, tM[t] - mt[t]), tP: tP[t], tM: tM[t] };
+    const req = counts[t], on = placed[t], short = Math.max(0, req - on), lot = stats.lt && stats.lt.length === nT ? stats.lt[t] : 0;
+    return { t, name: tp.name, color: tp.color, req, on: on - lot, lot, short, shortP: Math.max(0, tP[t] - pt[t]), shortM: Math.max(0, tM[t] - mt[t]), tP: tP[t], tM: tM[t] };
   }).filter((x) => x.req > 0).sort((a, b) => b.short - a.short || b.req - a.req);
   const plan = LOTS.plan = offPlan();                                     // parked vehicles with no kerb space go to the lots, then to the flexible spaces
-  rows.forEach((x) => { x.off = Math.min(x.shortP, plan.off[x.t]); x.nobay = x.short - x.off; x.noP = x.shortP - x.off; });
+  rows.forEach((x) => { const po = Math.min(x.shortP, plan.off[x.t]); x.off = x.lot + po; x.nobay = x.short - po; x.noP = x.shortP - po; });
   const sum = (k) => rows.reduce((s, x) => s + x[k], 0);
   const tot = { req: sum('req'), on: sum('on'), short: sum('short'), shortP: sum('noP'), shortM: sum('shortM'), off: sum('off'), nobay: sum('nobay'), shortPAll: sum('shortP') };
-  const bays = [0, 1].map((q) => { let dem = 0, on = 0; rows.forEach((x) => { if ((TYPES[x.t].L <= 2.3 ? 0 : 1) === q) { dem += x.tP; on += (haveSplit ? stats.pt[x.t] : 0); } }); return { dem, on, bays: q ? state.bayCar : state.bayMoto }; });
+  const bays = [0, 1].map((q) => { let dem = 0, on = 0; rows.forEach((x) => { if ((TYPES[x.t].L <= 2.3 ? 0 : 1) === q) { dem += x.tP; on += (haveSplit ? stats.pt[x.t] - (stats.lt ? stats.lt[x.t] : 0) : 0); } }); return { dem, on, bays: q ? state.bayCar : state.bayMoto }; });
   let wl = 0, wn = 0; for (let t = 0; t < nT; t++) { wl += tP[t] * (TYPES[t].L + 0.1); wn += tP[t]; }
   let sl = 0, sn = 0; rows.forEach((x) => { sl += x.shortP * (TYPES[x.t].L + 0.1); sn += x.shortP; });
   const Lavg = sn ? sl / sn : (wn ? wl / wn : 2.1);                       // mean length of the parked vehicles that lack space (incl. gap): they are the ones new kerb would hold
-  let pLen = 0; for (let t = 0; t < nT; t++) pLen += (haveSplit ? stats.pt[t] : pt[t]) * (TYPES[t].L + 0.1);   // kerb length the parked vehicles use now
+  let pLen = 0; for (let t = 0; t < nT; t++) pLen += (haveSplit ? stats.pt[t] - (stats.lt ? stats.lt[t] : 0) : pt[t]) * (TYPES[t].L + 0.1);   // kerb length the parked vehicles use now
   // areas: street and kerb lengths from the network, vehicles from the live positions
   const Z = ZONES.map((name) => ({ name, seg: 0, streetKm: 0, openKm: 0, closedKm: 0, parked: 0, moving: 0, pLen: 0 }));
   const cats = {}, byStreet = {};
@@ -1211,7 +1222,7 @@ const rpPct = (a, b) => (b ? (100 * a / b).toFixed(1) + ' %' : '–');
 function rpRender() {
   const d = RP.data = rpCompute(), T = d.tot;
   $('rpCtx').textContent = d.ctx + ' · parking: ' + d.openAllKm.toFixed(1) + ' km of kerb open, ' + d.closedAllKm.toFixed(1) + ' km closed';
-  $('rpKpi').innerHTML = [['Requested', fmt(T.req), ''], ['On the street', fmt(T.on), rpPct(T.on, T.req)], ['Parked off-street', fmt(T.off), 'supply: ' + fmt(d.plan.capMoto + d.plan.capCar) + ' in lots + ' + fmt(d.plan.flexCap) + ' other'],
+  $('rpKpi').innerHTML = [['Requested', fmt(T.req), ''], ['On the street', fmt(T.on), rpPct(T.on, T.req)], ['Parked off-street', fmt(T.off), 'supply: ' + fmt(offSupply() - offFlex()) + ' in lots + ' + fmt(d.plan.flexCap) + ' other'],
     ['No bay or room', fmt(T.nobay), rpPct(T.nobay, T.req)], ['… parked, no bay', fmt(T.shortP), ''], ['… moving, no lane', fmt(T.shortM), '']]
     .map((k, i) => `<div class="kpi${i === 3 && T.nobay ? ' bad' : ''}"><b>${k[1]}</b><span>${k[0]}</span><small>${k[2]}</small></div>`).join('');
   const mx = Math.max(1, ...d.rows.map((x) => x.req));
@@ -1244,14 +1255,14 @@ function rpLotsHtml(d) {
   const bas = { reported: 'reported', area: 'from area', manual: 'entered', none: '–' };
   let sm = 0, sc2 = 0, su = 0;
   const rows = LOTS.list.map((l, i) => {
-    const on = !!LOTS.inc[l.status], cap = l.cap.moto + l.cap.car, used = on ? l.cap.moto * fm + l.cap.car * fc : 0, f = cap ? used / cap : 0;
+    const on = !!LOTS.inc[l.status], cap = l.cap.moto + l.cap.car, U = lotUsed(l), used = !on ? 0 : U ? U.m + U.c : l.cap.moto * fm + l.cap.car * fc, f = cap ? used / cap : 0;
     if (on) { sm += l.cap.moto; sc2 += l.cap.car; su += used; }
     const cls = l.cap.moto && l.cap.car ? 'mixed' : l.cap.moto ? 'motorcycle' : l.cap.car ? 'car-size' : '–';
     return `<tr${on ? '' : ' style="opacity:.5"'}><td><a href="#" class="lotgo" data-i="${i}">${esc(l.name)}</a></td><td>${esc(l.status)}${on ? '' : ' (not counted)'}</td><td>${cls}</td><td>${fmt(l.cap.moto)}</td><td>${fmt(l.cap.car)}</td><td>${on ? fmt(Math.round(used)) : '–'}</td><td class="${f > 0.97 ? 'bad' : ''}">${on && cap ? (f * 100).toFixed(0) + ' %' : '–'}</td><td>${bas[l.capSource] || esc(l.capSource || '')}${l.conf ? ' · ' + esc(l.conf) : ''}</td><td>${esc(l.src || '')}${l.note ? ' <small>' + esc(l.note) + '</small>' : ''}</td></tr>`;
   });
   return '<table><tr><th>Lot (click to zoom)</th><th>Status</th><th>Class</th><th>Motorcycle spaces</th><th>Car-size spaces</th><th>In use (est.)</th><th>Full</th><th>Capacity basis</th><th>Source</th></tr>' + rows.join('') +
     `<tr class="tot"><td>Counted lots</td><td></td><td></td><td>${fmt(sm)}</td><td>${fmt(sc2)}</td><td>${fmt(Math.round(su))}</td><td>${sm + sc2 ? (100 * su / (sm + sc2)).toFixed(0) + ' %' : '–'}</td><td></td><td></td></tr></table>` +
-    '<div class="note">Vehicles that found no kerb space fill the lots of their class evenly (the model has no home address for a vehicle). A motorcycle lot takes only motorcycle-size vehicles; car-size lots take cars, pickups, vans and larger. Lots not ticked in the panel are listed but not counted.</div>';
+    '<div class="note">Parked vehicles take a lot bay first (the nearest lot with a free bay of their class), and the kerb only when the lots are full or out of reach; the tickbox in the panel reverses that. Vehicles longer than 5.6 m (trucks, lorries, buses) cannot use a lot. A motorcycle lot takes only motorcycle-size vehicles; car-size lots take cars, pickups, vans and larger. Lots not ticked in the panel are listed but not counted.</div>';
 }
 function rpOpen() { RP.open = true; $('rp').hidden = false; document.body.classList.add('rpopen'); rpRender(); clearInterval(RP.timer); RP.timer = setInterval(rpRender, 1000); }
 function rpClose() { RP.open = false; $('rp').hidden = true; document.body.classList.remove('rpopen'); clearInterval(RP.timer); }
@@ -1374,7 +1385,7 @@ function advPump() {
     };
     w.onerror = () => advFail('a test worker failed to start');
     const P = Object.assign(paramsMsg().P, d.P);
-    w.postMessage({ cmd: 'scenario', id: d.id, raw: rawNetwork, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: { P }, counts: d.counts, warm: 25, meas: 15, noPark: Array.from(NP.pk), flow: { ow: Array.from(net.ow), fl: Array.from(net.fl), cl: Array.from(net.cl) } });
+    w.postMessage({ cmd: 'scenario', lots: engLots(), id: d.id, raw: rawNetwork, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: { P }, counts: d.counts, warm: 25, meas: 15, noPark: Array.from(NP.pk), flow: { ow: Array.from(net.ow), fl: Array.from(net.fl), cl: Array.from(net.cl) } });
   }
 }
 function advProgress() {
@@ -1503,7 +1514,7 @@ async function init() {
   { const sr = $('scaleRange'); sr.value = Math.round(100 * requestedTotal() / TODAY_TOTAL); $('scaleOut').textContent = sr.value + ' %'; }
   fitView();
   updateYearUI(); clkUI();
-  bootBackend({ cmd: 'init', raw, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: paramsMsg(), counts: Array.from(counts), noPark: Array.from(NP.pk), flow: { ow: Array.from(net.ow), fl: Array.from(net.fl), cl: Array.from(net.cl) } });
+  bootBackend({ cmd: 'init', lots: engLots(), raw, dims: TYPES.map((t) => ({ L: t.L, W: t.W, v: t.v })), p: paramsMsg(), counts: Array.from(counts), noPark: Array.from(NP.pk), flow: { ow: Array.from(net.ow), fl: Array.from(net.fl), cl: Array.from(net.cl) } });
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(raf);
 }
 

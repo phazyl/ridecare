@@ -21,7 +21,16 @@ What it does
    entry replaces an OSM lot with the same name, or one within --match-m metres, so you can
    correct capacities, set the vehicle class, mark lots temporary / planned / unverified, and add
    lots that OSM does not have.
-5. Writes data/parking.json with every lot as a polygon in network metres.
+5. Fits every lot to the street network: parts of an outline that lie on the road area are cut off; a lot
+   that is mostly on the road is moved (smallest shift) to the nearest free ground beside it; lots that
+   overlap each other are separated. The road area is the street widths of data/network.json at the
+   largest road-area setting of the dashboard (--road-area-km2, default 1.0) plus --road-margin metres.
+6. Lays out real parking bays inside each fitted lot (aisles along the lot's long axis, double-loaded rows,
+   head-in): car-size bays 2.5 x 5 m with a 6 m aisle, motorcycle bays 1 x 2 m (HDC's standard) with a 3 m aisle.
+   Lots whose capacity was estimated from area get the capacity the layout really holds. For lots with a
+   reported or entered capacity the layout provides the bays (up to that capacity) and any remainder is kept as
+   "extra" capacity (upper floors, tight layouts) that the dashboard counts without drawing it.
+7. Writes data/parking.json with every lot as a polygon plus its bays, in network metres.
 
 Manual lots
 -----------
@@ -41,6 +50,8 @@ Usage
     pip install osmnx geopandas shapely pyproj numpy
     python tools/export_parking.py                   # OSM + manual files
     python tools/export_parking.py --no-osm          # manual files only (needs origin, see below)
+    python tools/export_parking.py --refit           # re-fit and re-layout the lots already in data/parking.json
+                                                     # (no internet needed; pip install shapely numpy)
     python tools/export_parking.py --origin 345678.9 467890.1   # UTM 43N of the network's SW corner
 
 Output: data/parking.json
@@ -344,6 +355,274 @@ def manual_from_feature(f, to_local, args):
 
 
 # ----------------------------------------------------------------------------------------------
+# fitting lots to the street network, and laying out bays
+# ----------------------------------------------------------------------------------------------
+BAY = {"moto": (1.0, 2.0, 3.0), "car": (2.5, 5.0, 6.0)}      # bay width, bay depth, aisle width (m)
+
+
+def shapely_mods():
+    try:
+        import shapely
+        from shapely import affinity
+        from shapely.geometry import LineString, Polygon, box
+        from shapely.ops import unary_union
+        from shapely.prepared import prep
+    except ImportError:
+        sys.exit("Missing package shapely. Run:  pip install shapely numpy")
+    return shapely, affinity, LineString, Polygon, box, unary_union, prep
+
+
+def road_area(net, area_km2, margin):
+    """Union of the street polygons as the dashboard draws them: width x (area / sum of length x width), plus a margin."""
+    _, _, LineString, _, _, unary_union, _ = shapely_mods()
+    rows = []
+    a0 = 0.0
+    for e in net["edges"]:
+        p = e.get("p") or []
+        if len(p) < 4:
+            continue
+        pts = list(zip(p[0::2], p[1::2]))
+        ln = LineString(pts)
+        rows.append((ln, float(e.get("w", 6.0))))
+        a0 += ln.length * float(e.get("w", 6.0))
+    scale = area_km2 * 1e6 / a0 if a0 > 0 else 1.0
+    geoms = [ln.buffer(w * scale / 2 + margin, 6) for ln, w in rows]
+    return unary_union(geoms), scale
+
+
+def biggest(geom):
+    if geom.is_empty:
+        return None
+    if geom.geom_type == "Polygon":
+        return geom
+    parts = [g for g in getattr(geom, "geoms", []) if g.geom_type == "Polygon"]
+    return max(parts, key=lambda g: g.area) if parts else None
+
+
+def fit_one(poly, road, placed, args):
+    """Return (polygon, action, shift_m, lost_fraction) or None. poly: shapely polygon (local metres).
+    road / placed: shapely geometries to stay clear of (placed may be None)."""
+    shapely, affinity, LineString, Polygon, box, unary_union, prep = shapely_mods()
+    a0 = poly.area
+    if a0 < 1:
+        return None
+    r = args.max_move + 5
+    minx, miny, maxx, maxy = poly.bounds
+    win = box(minx - r, miny - r, maxx + r, maxy + r)
+    road = road.intersection(win)                         # only the road near this lot matters: much faster
+    if placed is not None and not placed.is_empty:
+        placed = placed.intersection(win)
+    prep_road = prep(road)
+
+    prep_placed = prep(placed) if placed is not None and not placed.is_empty else None
+
+    def clear(q):                                         # no contact at all with the road area or an earlier lot
+        return not prep_road.intersects(q) and not (prep_placed is not None and prep_placed.intersects(q))
+
+    def overlap(q):
+        o = q.intersection(road).area if prep_road.intersects(q) else 0.0
+        if prep_placed is not None and prep_placed.intersects(q):
+            o += q.intersection(placed).area
+        return o
+
+    if overlap(poly) < 0.5:
+        return poly, "ok", 0.0, 0.0
+    free = poly.difference(road)
+    if placed is not None and not placed.is_empty:
+        free = free.difference(placed)
+    best = biggest(free)
+    if best is not None and best.area >= args.keep_frac * a0:
+        return best.buffer(0), "clipped", 0.0, 1 - best.area / a0
+    # mostly on the road (or on other lots): slide the whole outline to the nearest clear ground
+    cx, cy = poly.centroid.x, poly.centroid.y
+    for shrink in (1.0, 0.8, 0.62, 0.45):
+        q0 = affinity.scale(poly, shrink, shrink, origin=(cx, cy)) if shrink < 1 else poly
+        step = 2.0
+        r = step
+        found = None
+        while r <= args.max_move:
+            n = max(12, int(2 * math.pi * r / 3.0))
+            for k in range(n):
+                ang = 2 * math.pi * k / n
+                q = affinity.translate(q0, r * math.cos(ang), r * math.sin(ang))
+                if clear(q):
+                    found = (q, r)
+                    break
+            if found:
+                break
+            r += step
+        if found:
+            q, r = found
+            return q, ("moved" if shrink == 1 else "moved+shrunk"), r, 1 - q.area / a0
+    return None
+
+
+def bay_slots(region, kind, theta_unused=None):
+    """Bays in a region whose aisles run along x (rotated frame). Returns [(x, y, s)], s = +1 / -1 = which way the nose points (+y / -y)."""
+    import numpy as np
+    shapely, affinity, LineString, Polygon, box, unary_union, prep = shapely_mods()
+    w, d, a = BAY[kind]
+    if region is None or region.is_empty or region.area < w * d * 2:
+        return []
+    shapely.prepare(region)
+    minx, miny, maxx, maxy = region.bounds
+    mod = 2 * d + a
+    n_y, n_x = (4, 1) if region.area > 12000 else (6, 2)
+    best = None
+    for yo in [mod * i / n_y for i in range(n_y)]:
+        for xo in [w * i / n_x for i in range(n_x)]:
+            xs = np.arange(minx + xo, maxx - w + 1e-6, w)
+            if len(xs) == 0:
+                continue
+            ys0 = np.arange(miny + yo - mod, maxy, mod)
+            X, Y0, YB, YA0, YA1, S = [], [], [], [], [], []
+            for y0 in ys0:
+                for yb, ya0, ya1, sgn in ((y0, y0 + d, y0 + d + a / 2, -1), (y0 + d + a, y0 + d + a / 2, y0 + d + a, 1)):
+                    if yb + d <= miny or yb >= maxy:
+                        continue
+                    X.append(xs); YB.append(np.full(len(xs), yb)); YA0.append(np.full(len(xs), ya0)); YA1.append(np.full(len(xs), ya1)); S.append(np.full(len(xs), sgn))
+            if not X:
+                continue
+            X = np.concatenate(X); YB = np.concatenate(YB); YA0 = np.concatenate(YA0); YA1 = np.concatenate(YA1); S = np.concatenate(S)
+            ok = shapely.contains(region, shapely.box(X, YB, X + w, YB + d)) & shapely.contains(region, shapely.box(X, YA0, X + w, YA1))
+            n = int(ok.sum())
+            if best is None or n > best[0]:
+                best = (n, X[ok] + w / 2, YB[ok] + d / 2, S[ok])
+    if best is None or best[0] == 0:
+        return []
+    return [(float(x), float(y), int(sg)) for x, y, sg in zip(best[1], best[2], best[3])]
+
+
+def layout_lot(lot, poly, args):
+    """Fill lot['bays'] / lot['cap'] / lot['extra'] from the fitted polygon."""
+    shapely, affinity, LineString, Polygon, box, unary_union, prep = shapely_mods()
+    cap_m, cap_c = lot["cap"]["moto"], lot["cap"]["car"]
+    area_based = lot.get("capSource") in ("area", "none", "layout")        # capacity follows the ground; reported / entered capacities stay as stated
+    # which classes does this lot offer, and how is the ground shared?
+    if area_based:
+        use = lot.get("use", "mixed")
+        frac_m = {"moto": 1.0, "car": 0.0, "mixed": 0.5}.get(use, 0.5)
+    else:
+        am, ac = cap_m * args.m2_moto, cap_c * args.m2_car
+        frac_m = am / (am + ac) if am + ac > 0 else 0.0
+        if cap_m + cap_c == 0:
+            lot["bays"] = {"moto": [], "car": []}
+            lot["extra"] = {"moto": 0, "car": 0}
+            lot["ang"] = 0.0
+            return
+    levels = lot.get("levels") or 1.0
+    mrr = poly.minimum_rotated_rectangle
+    xs, ys = mrr.exterior.coords.xy
+    e0 = (xs[1] - xs[0], ys[1] - ys[0])
+    e1 = (xs[2] - xs[1], ys[2] - ys[1])
+    e = e0 if math.hypot(*e0) >= math.hypot(*e1) else e1
+    theta = math.atan2(e[1], e[0])
+    cx, cy = poly.centroid.x, poly.centroid.y
+    rp = affinity.rotate(poly, -theta, origin=(cx, cy), use_radians=True)
+    minx, miny, maxx, maxy = rp.bounds
+    if 0.001 < frac_m < 0.999:                           # split the ground between the two classes along y
+        lo, hi = miny, maxy
+        for _ in range(24):
+            mid = (lo + hi) / 2
+            if rp.intersection(box(minx - 1, miny - 1, maxx + 1, mid)).area < frac_m * rp.area:
+                lo = mid
+            else:
+                hi = mid
+        cut = (lo + hi) / 2
+        reg_m = biggest(rp.intersection(box(minx - 1, miny - 1, maxx + 1, cut)))
+        reg_c = biggest(rp.intersection(box(minx - 1, cut, maxx + 1, maxy + 1)))
+    elif frac_m >= 0.999:
+        reg_m, reg_c = rp, None
+    else:
+        reg_m, reg_c = None, rp
+    sm = bay_slots(reg_m, "moto") if (reg_m is not None and (area_based or cap_m > 0)) else []
+    sc = bay_slots(reg_c, "car") if (reg_c is not None and (area_based or cap_c > 0)) else []
+    if not area_based:                                    # never more bays than the stated capacity: keep an even spread
+        def thin(lst, n):
+            if n <= 0:
+                return []
+            if len(lst) <= n:
+                return lst
+            lst = sorted(lst, key=lambda t: (round(t[1], 1), t[0]))
+            return [lst[int(i * len(lst) / n)] for i in range(n)]
+        sm, sc = thin(sm, cap_m), thin(sc, cap_c)
+
+    def back(lst):                                        # rotated frame -> local metres, rounded
+        co, si = math.cos(theta), math.sin(theta)
+        out = []
+        for x, y, s in lst:
+            dx, dy = x - cx, y - cy
+            out.extend([round(cx + dx * co - dy * si, 1), round(cy + dx * si + dy * co, 1), s])
+        return out
+    lot["bays"] = {"moto": back(sm), "car": back(sc)}
+    lot["ang"] = round(theta + math.pi / 2, 4)            # direction of the bay depth axis (nose of a +1 bay points along it)
+    nm, nc = len(sm), len(sc)
+    if area_based:
+        lot["cap"] = {"moto": int(nm * levels), "car": int(nc * levels)}
+        lot["capSource"] = "layout"
+        lot["extra"] = {"moto": int(nm * (levels - 1)), "car": int(nc * (levels - 1))}
+    else:
+        lot["extra"] = {"moto": max(0, cap_m - nm), "car": max(0, cap_c - nc)}
+
+
+def fit_and_layout(lots, net, args):
+    """Move / clip every lot off the road area, separate overlapping lots and lay out bays. Mutates and returns stats."""
+    shapely, affinity, LineString, Polygon, box, unary_union, prep = shapely_mods()
+    road, scale = road_area(net, args.road_area_km2, args.road_margin)
+    st = Counter()
+    placed_geoms = []
+    out = []
+    def order(l):                                         # stated capacities first, then the biggest outlines: stable on re-runs
+        stated = 0 if l.get("capSource") in ("area", "none", "layout") else l["cap"]["car"] + l["cap"]["moto"]
+        ring = l.get("orig") or l["poly"]
+        a = 0.0
+        for i in range(len(ring)):
+            a += ring[i][0] * ring[(i + 1) % len(ring)][1] - ring[(i + 1) % len(ring)][0] * ring[i][1]
+        return (-stated, -abs(a) / 2, l.get("name", ""))
+    for lt in sorted(lots, key=order):
+        ring0 = lt.get("orig") or lt["poly"]
+        try:
+            poly = Polygon(ring0).buffer(0)
+        except Exception:
+            st["invalid"] += 1
+            continue
+        if poly.is_empty:
+            st["invalid"] += 1
+            continue
+        poly = biggest(poly)
+        placed = unary_union(placed_geoms) if placed_geoms else None
+        res = fit_one(poly, road, placed, args)
+        if res is None:
+            st["dropped"] += 1
+            lt["note"] = (lt.get("note", "") + "; " if lt.get("note") else "") + "could not be placed clear of the roads"
+            lt["fit"] = {"action": "dropped"}
+            print(f"  dropped: {lt['name']} (no clear ground within {args.max_move:.0f} m)")
+            continue
+        q, action, shift, lost = res
+        q = q.simplify(0.3)
+        ring = [(x, y) for x, y in list(q.exterior.coords)[:-1]]
+        lt["orig"] = None if action == "ok" else [[round(x, 1), round(y, 1)] for x, y in ring0]
+        lt["poly"] = [[round(x, 1), round(y, 1)] for x, y in ring]
+        cx, cy = q.centroid.x, q.centroid.y
+        lt["xy"] = [round(cx, 1), round(cy, 1)]
+        lt["schematic"] = lt.get("schematic", False) if action == "ok" else lt.get("schematic", False)
+        lt["area"] = int(round(q.area))
+        if action != "ok":
+            msg = {"clipped": f"{lost:.0%} of the outline was on the road and was cut off",
+                   "moved": f"moved {shift:.0f} m off the road",
+                   "moved+shrunk": f"moved {shift:.0f} m off the road and shrunk to {1 - lost:.0%}"}[action]
+            lt["note"] = (lt.get("note", "") + "; " if lt.get("note") else "") + msg
+        lt["fit"] = {"action": action, "shift_m": round(shift, 1), "lost": round(lost, 3)}
+        st[action] += 1
+        layout_lot(lt, q, args)
+        placed_geoms.append(q.buffer(0.3))
+        out.append(lt)
+    lots[:] = out
+    st["road_scale"] = round(scale, 3)
+    return st
+
+
+# ----------------------------------------------------------------------------------------------
 # OpenStreetMap access (only used when not --no-osm)
 # ----------------------------------------------------------------------------------------------
 def osm_modules():
@@ -391,12 +670,33 @@ def main():
     ap.add_argument("--match-m", type=float, default=40.0, help="a manual point replaces an OSM lot within this distance")
     ap.add_argument("--min-area", type=float, default=60.0, help="ignore OSM outlines smaller than this (m2)")
     ap.add_argument("--out", default="data/parking.json")
+    ap.add_argument("--refit", action="store_true", help="re-fit and re-layout the lots already in --out (no OSM, no internet)")
+    ap.add_argument("--no-fit", action="store_true", help="skip fitting to the road area and the bay layout")
+    ap.add_argument("--road-area-km2", type=float, default=1.0,
+                    help="road area (dashboard slider) to stay clear of; 1.0 = the widest setting (default)")
+    ap.add_argument("--road-margin", type=float, default=0.5, help="clear distance kept from the road edge (m)")
+    ap.add_argument("--max-move", type=float, default=150.0, help="furthest a lot may be moved to get off the road (m)")
+    ap.add_argument("--keep-frac", type=float, default=0.6,
+                    help="a lot keeps its place (cut at the road edge) if at least this share of it is off the road")
     args = ap.parse_args()
 
     net = json.load(open(args.network))
     meta = net["meta"]
     bbox = args.bbox or meta.get("bbox_lonlat") or DEFAULT_BBOX
     bx, by = meta["bounds_m"]
+
+    if args.refit:                                       # no OSM, no georeferencing: lots are already in network metres
+        old = json.load(open(args.out))
+        lots = old["lots"]
+        st = fit_and_layout(lots, net, args)
+        for i, lt in enumerate(lots, 1):
+            lt["id"] = f"L{i:03d}"
+        old["lots"] = lots
+        old["meta"]["n_lots"] = len(lots)
+        old["meta"]["fit"] = {k: v for k, v in st.items()}
+        json.dump(old, open(args.out, "w"), ensure_ascii=False, separators=(",", ":"))
+        summarise(lots, st, args)
+        return
 
     try:
         from pyproj import Transformer
@@ -481,6 +781,9 @@ def main():
     for lt in lots:
         x, y = lt["xy"]
         (keep if -150 <= x <= bx + 150 and -150 <= y <= by + 150 else outside).append(lt)
+    fit_stats = {}
+    if not args.no_fit:
+        fit_stats = fit_and_layout(keep, net, args)
     keep.sort(key=lambda lt: (-(lt["cap"]["car"] + lt["cap"]["moto"]), lt["name"]))
     for i, lt in enumerate(keep, 1):
         lt["id"] = f"L{i:03d}"
@@ -493,7 +796,7 @@ def main():
             "assumptions": {"m2_per_car_space": args.m2_car, "m2_per_moto_space": args.m2_moto,
                             "note": "areas include aisles; modelling assumptions, not Maldivian standards"},
             "status_values": list(STATUSES), "use_values": list(USES),
-            "n_lots": len(keep), "n_outside_map": len(outside),
+            "n_lots": len(keep), "n_outside_map": len(outside), "fit": {k: v for k, v in fit_stats.items()},
             "outside_map": [lt["name"] for lt in outside],
             "needs_coordinates": pending,
         },
@@ -508,20 +811,31 @@ def main():
         print("skipped OSM features:", dict(Counter(skipped)))
     if merged:
         print("manual entries:", dict(merged))
-    by = {}
-    for lt in keep:
-        s = by.setdefault(lt["status"], [0, 0, 0])
-        s[0] += 1
-        s[1] += lt["cap"]["moto"]
-        s[2] += lt["cap"]["car"]
-    for st, (n, m, c) in sorted(by.items()):
-        print(f"  {st:11s} {n:4d} lots   motorcycle spaces {m:7d}   car spaces {c:6d}")
+    summarise(keep, fit_stats, args)
     nocap = [lt["name"] for lt in keep if lt["cap"]["moto"] + lt["cap"]["car"] == 0]
-    if nocap:
-        print(f"  {len(nocap)} lots have no capacity yet (add capacity or an outline): " + ", ".join(nocap[:8]) + (" ..." if len(nocap) > 8 else ""))
     if pending:
         print(f"  {len(pending)} manual rows need coordinates (lat, lon) before they can be placed: " +
               ", ".join(p["name"] for p in pending[:8]) + (" ..." if len(pending) > 8 else ""))
+
+
+def summarise(keep, fit_stats, args):
+    if fit_stats:
+        print("fit to the road area:", {k: v for k, v in fit_stats.items() if k != "road_scale"},
+              f"(streets drawn at x{fit_stats.get('road_scale')} of their file width at {args.road_area_km2} km2)")
+    by = {}
+    for lt in keep:
+        s = by.setdefault(lt["status"], [0, 0, 0, 0, 0])
+        s[0] += 1
+        s[1] += lt["cap"]["moto"]
+        s[2] += lt["cap"]["car"]
+        b = lt.get("bays") or {}
+        s[3] += len(b.get("moto", [])) // 3
+        s[4] += len(b.get("car", [])) // 3
+    for st, (n, m, c, bm, bc) in sorted(by.items()):
+        print(f"  {st:11s} {n:4d} lots   capacity: {m:7d} motorcycle, {c:6d} car   drawn bays: {bm:6d} motorcycle, {bc:6d} car")
+    nocap = [lt["name"] for lt in keep if lt["cap"]["moto"] + lt["cap"]["car"] == 0]
+    if nocap:
+        print(f"  {len(nocap)} lots have no capacity yet (add capacity or an outline): " + ", ".join(nocap[:8]) + (" ..." if len(nocap) > 8 else ""))
 
 
 if __name__ == "__main__":
