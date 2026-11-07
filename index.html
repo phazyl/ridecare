@@ -162,9 +162,26 @@
     <div class="stat"><span id="lFoot">Vehicle footprint (all)</span><b id="sFoot">–</b></div>
     <div class="stat"><span id="lPct">Coverage of road area</span><b id="sPct">–</b></div>
     <div class="stat" id="rowGap" hidden><span>…of which braking gap (moving)</span><b id="sGap">–</b></div>
-    <div class="stat"><span>…of which parked</span><b id="sParkFoot">–</b></div>
-    <div class="stat"><span>Vehicles (moving / parked)</span><b id="sVeh">–</b></div>
-    <div class="stat"><span>Placement (fits / requested)</span><b id="sPlaced">–</b></div>
+    <div class="stat"><span>…of which parked at the kerb</span><b id="sParkFoot">–</b></div>
+    <div class="stat"><span>…of which moving (trips)</span><b id="sMovFoot">–</b></div>
+    <div class="stat"><span>…of which circulating, no space</span><b id="sCruFoot">–</b></div>
+    <h3 style="margin-top:10px">Where the vehicles are</h3>
+    <div class="stat"><span>Parked at the kerb</span><b id="sNKerb">–</b></div>
+    <div class="stat"><span>Parked in lots</span><b id="sNLot">–</b></div>
+    <div class="stat"><span>Moving (trips)</span><b id="sNMov">–</b></div>
+    <div class="stat"><span>Circulating without a parking space</span><b id="sNCru">–</b></div>
+    <div class="stat" id="rowUnp" hidden><span>Beyond road capacity (not drawn)</span><b id="sNUnp">–</b></div>
+    <div class="stat"><span>On the map</span><b id="sPlaced">–</b></div>
+    <h3 style="margin-top:10px">Parking space</h3>
+    <div class="stat"><span>Kerb strip covered</span><b id="sKerbOcc">–</b></div>
+    <div class="stat"><span>Kerb spaces used (est. capacity)</span><b id="sBayUse">–</b></div>
+    <div class="stat"><span>Lot ground area (counted lots)</span><b id="sLotGround">–</b></div>
+    <div class="stat"><span>Lot ground covered</span><b id="sLotOcc">–</b></div>
+    <div class="stat"><span>Two-wheeler bays used</span><b id="sLotM">–</b></div>
+    <div class="stat"><span>Car-size bays used</span><b id="sLotC">–</b></div>
+    <div class="stat"><span>Bus / truck bays used</span><b id="sLotL">–</b></div>
+    <div class="stat"><span>All lot bays used</span><b id="sLotBays">–</b></div>
+    <div class="stat"><span>Demand per space (kerb est. + lots)</span><b id="sPress">–</b></div>
     <div class="line"><button id="rpOpen">Placement report: who does not fit, and what would help</button></div>
     <div class="stat"><span>Traffic state</span><b id="sBlocked">–</b></div>
     <div class="stat"><span>Jam relocations (total)</span><b id="sReloc">–</b></div>
@@ -256,7 +273,7 @@
 <h3>Parking &amp; movement</h3>
     <div class="line"><label for="parkRange" id="parkLbl">Share of vehicles parked</label><output id="parkOut">89 %</output></div>
     <input type="range" id="parkRange" min="0" max="100" step="1" value="89">
-    <label class="chk"><input type="checkbox" id="bayChk" checked> Limit kerb parking to the report’s bays</label>
+    <label class="chk"><input type="checkbox" id="bayChk" checked> Limit parking (kerb + lots) to the report’s slot counts</label>
     <div class="line"><label for="bayMotoNum">Motorcycle bays (end-on)</label><input type="number" id="bayMotoNum" min="0" step="100" value="132230" style="width:100px"></div>
     <div class="line"><label for="bayCarNum">Car-size bays (shared by cars, pickups, vans, trucks …)</label><input type="number" id="bayCarNum" min="0" step="100" value="7163" style="width:100px"></div>
     <div class="line"><label for="offLotsNum" id="offLotsLbl">Off-street lots (mapped in OpenStreetMap)</label><input type="number" id="offLotsNum" min="0" step="100" value="1111" style="width:100px"></div>
@@ -267,10 +284,11 @@
       <label class="chk"><input type="checkbox" id="lotTemp" checked> Temporary zones <span id="lotTempN" style="color:var(--mut);font-size:12px"></span></label>
       <label class="chk"><input type="checkbox" id="lotPlan"> Planned buildings (future scenario) <span id="lotPlanN" style="color:var(--mut);font-size:12px"></span></label>
       <label class="chk"><input type="checkbox" id="lotUnv"> Unverified leads <span id="lotUnvN" style="color:var(--mut);font-size:12px"></span></label>
+      <label class="chk"><input type="checkbox" id="lotCal" checked> Calibrated to the report (assumed zones fill the gap) <span id="lotCalN" style="color:var(--mut);font-size:12px"></span></label>
       <label class="chk"><input type="checkbox" id="lotShow" checked> Show lots on the map</label>
       <div class="note" id="lotsNote"></div>
     </div>
-    <div class="note">Report: 132,230 motorcycle and 7,163 car parking slots, surveyed along the streets. Garages cannot be estimated: HDC refused to share the data, so enter a figure here once it is known. Vehicles with no bay, kerb or off-street space are assumed to park illegally or stay off the road.</div>
+    <div class="note">Report: 132,230 motorcycle and 7,163 car public parking slots, kerb and off street together (how they split is not stated). Garages cannot be estimated: HDC refused to share the data, so enter a figure here once it is known. Vehicles with no space keep circulating on the street.</div>
     <div class="line"><label for="stripNum">Kerbside parking strip (m per side)</label><input type="number" id="stripNum" min="0.5" max="4" step="0.1" value="2.3" style="width:70px"></div>
     <div class="line"><label for="patRange">Gridlock breaker: relocate after waiting</label><output id="patOut">5 s</output></div>
     <input type="range" id="patRange" min="0" max="60" step="1" value="5">
@@ -340,7 +358,7 @@
   <div id="rpBtns"><button id="rpCsv">Export CSV</button><button id="rpPrint">Print</button><button id="rpClose">✕ Close</button></div>
   <h2>Placement report</h2><div class="note" id="rpCtx" style="margin-top:0"></div>
   <div id="rpKpi"></div>
-  <h4>Report bays against parked demand</h4><table id="rpBays"></table>
+  <h4>Parked demand and where it goes, by vehicle class</h4><table id="rpBays"></table>
   <h4>By vehicle type</h4><table id="rpTypes"></table>
   <h4>By area</h4><table id="rpZones"></table>
   <h4>Off-street lots</h4><div id="rpLots"></div>

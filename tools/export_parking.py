@@ -71,8 +71,8 @@ CRS_UTM = "EPSG:32643"
 DEFAULT_BBOX = [73.465, 4.160, 73.560, 4.250]
 M2_CAR = 28.0      # gross area per car space incl. aisles (25-30 typical)
 M2_MOTO = 3.8      # gross area per motorcycle space incl. aisles (3-4.5 typical)
-STATUSES = ("existing", "temporary", "planned", "unverified")
-USES = ("car", "moto", "mixed")
+STATUSES = ("existing", "temporary", "planned", "unverified", "calibrated")
+USES = ("car", "moto", "mixed", "large")
 ON_STREET = {"street_side", "lane", "on_kerb", "half_on_kerb", "shoulder", "parking_space", "layby"}
 
 
@@ -202,7 +202,7 @@ def make_lot(name, status, use, moto, car, source, conf, ring=None, xy=None, are
         schematic = True
         ring = square(cx, cy, area or 150.0)
     return {
-        "name": name or "Unnamed lot", "status": status, "use": use, "cap": {"moto": int(moto), "car": int(car)},
+        "name": name or "Unnamed lot", "status": status, "use": use, "cap": {"moto": int(moto), "car": int(car), "large": 0},
         "capSource": cap_source, "conf": conf, "src": source, "note": note,
         "area": int(round(area or 0)), "levels": levels, "schematic": schematic,
         "xy": [round(cx, 1), round(cy, 1)], "poly": [[round(x, 1), round(y, 1)] for x, y in ring],
@@ -357,7 +357,7 @@ def manual_from_feature(f, to_local, args):
 # ----------------------------------------------------------------------------------------------
 # fitting lots to the street network, and laying out bays
 # ----------------------------------------------------------------------------------------------
-BAY = {"moto": (1.0, 2.0, 3.0), "car": (2.5, 5.0, 6.0)}      # bay width, bay depth, aisle width (m)
+BAY = {"moto": (1.0, 2.0, 3.0), "car": (2.5, 5.0, 6.0), "large": (3.0, 12.0, 7.0)}      # bay width, bay depth, aisle width (m); large = bus / truck size
 
 
 def shapely_mods():
@@ -501,12 +501,12 @@ def layout_lot(lot, poly, args):
     # which classes does this lot offer, and how is the ground shared?
     if area_based:
         use = lot.get("use", "mixed")
-        frac_m = {"moto": 1.0, "car": 0.0, "mixed": 0.5}.get(use, 0.5)
+        frac_m = {"moto": 1.0, "car": 0.0, "mixed": 0.5, "large": 0.0}.get(use, 0.5)
     else:
         am, ac = cap_m * args.m2_moto, cap_c * args.m2_car
         frac_m = am / (am + ac) if am + ac > 0 else 0.0
         if cap_m + cap_c == 0:
-            lot["bays"] = {"moto": [], "car": []}
+            lot["bays"] = {"moto": [], "car": [], "large": []}
             lot["extra"] = {"moto": 0, "car": 0}
             lot["ang"] = 0.0
             return
@@ -536,6 +536,31 @@ def layout_lot(lot, poly, args):
     else:
         reg_m, reg_c = None, rp
     sm = bay_slots(reg_m, "moto") if (reg_m is not None and (area_based or cap_m > 0)) else []
+    sl = []
+    if area_based and lot.get("use") == "large":                        # a bus / truck zone: the whole ground is large bays
+        sl = bay_slots(rp, "large")
+        reg_c = None
+    if area_based and reg_c is not None and args.large_share > 0:       # bus / truck bays take a share of the car-size ground
+        cx0, cy0, cx1, cy1 = reg_c.bounds
+        lo, hi, target = cy0, cy1, args.large_share * reg_c.area
+        bw, bh = BAY["large"][1] + BAY["large"][2] / 2, max(cx1 - cx0, 1.0)      # one row of large bays needs a strip about 15.5 m deep
+        need = bw * bh * (reg_c.area / (bh * max(cy1 - cy0, 1.0)))
+        if need * 1.05 <= 0.35 * reg_c.area:                                     # a thin 5 % slice holds no bay: widen it to one row, if the lot is big enough
+            target = max(target, need * 1.05)
+        for _ in range(24):
+            mid = (lo + hi) / 2
+            if reg_c.intersection(box(cx0 - 1, mid, cx1 + 1, cy1 + 1)).area > target:
+                lo = mid
+            else:
+                hi = mid
+        cut_l = (lo + hi) / 2
+        rl = biggest(reg_c.intersection(box(cx0 - 1, cut_l, cx1 + 1, cy1 + 1)))
+        rc2 = biggest(reg_c.intersection(box(cx0 - 1, cy0 - 1, cx1 + 1, cut_l)))
+        sl = bay_slots(rl, "large") if rl is not None else []
+        if sl and rc2 is not None:
+            reg_c = rc2
+        else:
+            sl = []
     sc = bay_slots(reg_c, "car") if (reg_c is not None and (area_based or cap_c > 0)) else []
     if not area_based:                                    # never more bays than the stated capacity: keep an even spread
         def thin(lst, n):
@@ -554,15 +579,16 @@ def layout_lot(lot, poly, args):
             dx, dy = x - cx, y - cy
             out.extend([round(cx + dx * co - dy * si, 1), round(cy + dx * si + dy * co, 1), s])
         return out
-    lot["bays"] = {"moto": back(sm), "car": back(sc)}
+    lot["bays"] = {"moto": back(sm), "car": back(sc), "large": back(sl)}
     lot["ang"] = round(theta + math.pi / 2, 4)            # direction of the bay depth axis (nose of a +1 bay points along it)
     nm, nc = len(sm), len(sc)
     if area_based:
-        lot["cap"] = {"moto": int(nm * levels), "car": int(nc * levels)}
+        nl = len(sl)
+        lot["cap"] = {"moto": int(nm * levels), "car": int(nc * levels), "large": int(nl * levels)}
         lot["capSource"] = "layout"
-        lot["extra"] = {"moto": int(nm * (levels - 1)), "car": int(nc * (levels - 1))}
+        lot["extra"] = {"moto": int(nm * (levels - 1)), "car": int(nc * (levels - 1)), "large": int(nl * (levels - 1))}
     else:
-        lot["extra"] = {"moto": max(0, cap_m - nm), "car": max(0, cap_c - nc)}
+        lot["extra"] = {"moto": max(0, cap_m - nm), "car": max(0, cap_c - nc), "large": 0}
 
 
 def fit_and_layout(lots, net, args):
@@ -622,6 +648,116 @@ def fit_and_layout(lots, net, args):
     return st
 
 
+def city_blocks(net, road):
+    """City blocks of Malé and Hulhumalé: the enclosed faces of the street network that are compact (not the long loop between
+    the two carriageways of the bridge, not the airport aprons, not slivers) and part of the dense street fabric.
+    Returns [(free ground of the block clear of the road area, prepared copy, (tx, ty) direction of its long side, bounds...)]."""
+    shapely, affinity, LineString, Polygon, box, unary_union, prep = shapely_mods()
+    from shapely.ops import polygonize
+    lines = []
+    for e in net["edges"]:
+        p = e.get("p") or []
+        if len(p) >= 4:
+            lines.append(LineString(list(zip(p[0::2], p[1::2]))))
+    cand = []
+    for f in polygonize(unary_union(lines)):
+        a = f.area
+        if a < 900 or a > 80000:
+            continue
+        mrr = f.minimum_rotated_rectangle
+        xs, ys = mrr.exterior.coords.xy
+        s1, s2 = math.hypot(xs[1] - xs[0], ys[1] - ys[0]), math.hypot(xs[2] - xs[1], ys[2] - ys[1])
+        if min(s1, s2) < 20 or a / mrr.area < 0.5:
+            continue
+        cand.append((f, (xs[1] - xs[0], ys[1] - ys[0]) if s1 >= s2 else (xs[2] - xs[1], ys[2] - ys[1])))
+    cs = [f.centroid for f, _ in cand]
+    out = []
+    for (f, d), c in zip(cand, cs):
+        if sum(1 for o in cs if o.distance(c) < 350) < 6:               # dense street fabric only
+            continue
+        free = biggest(f.difference(road))
+        if free is None or free.area < 700:
+            continue
+        free_in = biggest(free.buffer(-1.5))
+        if free_in is None or free_in.area < 400:
+            continue
+        n = math.hypot(*d) or 1.0
+        out.append((free_in, prep(free_in), (d[0] / n, d[1] / n)) + tuple(free_in.bounds))
+    return out
+
+
+def add_calibration(lots, net, args):
+    """Add a pool of motorcycle 'calibration zones' on free ground beside the streets.
+
+    The IUM report counts public parking slots on streets and off street (132,230 motorcycle, 7,163 car), but OpenStreetMap
+    shows only a small share of the off-street ground. These zones stand in for the rest: they are NOT surveyed lots, their
+    places are visual estimates, and the dashboard switches on only as many as it needs to bring kerb + lots up to the report
+    totals (switch 'calibrated to the report'). Deterministic for a given --calib-seed."""
+    import random
+    shapely, affinity, LineString, Polygon, box, unary_union, prep = shapely_mods()
+    from shapely.strtree import STRtree
+    if args.no_calib or args.calib_km2 <= 0:
+        return {"zones": 0}
+    road, scale = road_area(net, args.road_area_km2, args.road_margin)
+    prep_road = prep(road)
+    static = [Polygon(l["poly"]).buffer(1.0) for l in lots]
+    tree = STRtree(static) if static else None
+    blocks = city_blocks(net, road)                                     # land inside Malé and Hulhumalé only: no bridge, no sea, no airport apron
+    if not blocks:
+        return {"zones": 0}
+    wts = [b[0].area for b in blocks]
+    rng = random.Random(args.calib_seed)
+    zones, grid, area_sum, tries = [], {}, 0.0, 0
+    phases = [("moto", args.calib_km2 * 1e6, (24, 44), (22, 36), (1.0, 0.75, 0.55)), ("large", args.calib_large_km2 * 1e6, (36, 52), (34, 46), (1.0,))]
+    kind, target, wr, hr, shrinks = phases[0]
+    kinds = []
+    while tries < 150000:
+        if area_sum >= target:
+            if kind == "large":
+                break
+            kind, target, wr, hr, shrinks = phases[1]
+            area_sum = 0.0
+            if target <= 0:
+                break
+        tries += 1
+        free_in, prep_in, (tx, ty), minx, miny, maxx, maxy = rng.choices(blocks, weights=wts)[0]
+        cx, cy = rng.uniform(minx, maxx), rng.uniform(miny, maxy)
+        nx, ny = -ty, tx
+        W0, H0 = rng.uniform(*wr), rng.uniform(*hr)
+        if rng.random() < 0.5:
+            W0, H0 = H0, W0
+        q = None
+        for k in shrinks:
+            W, H = W0 * k, H0 * k
+            ring = [(cx + sx * tx * W / 2 + sy * nx * H / 2, cy + sx * ty * W / 2 + sy * ny * H / 2) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+            cand = Polygon(ring)
+            if prep_in.contains(cand):                                   # wholly inside the block, clear of the road area
+                q = cand
+                break
+        if q is None:
+            continue
+        if tree is not None and len(tree.query(q.buffer(1.0), predicate="intersects")):
+            continue
+        cells = {(int(cx // 80) + i, int(cy // 80) + j) for i in (-1, 0, 1) for j in (-1, 0, 1)}
+        if any(q.buffer(1.0).intersects(z) for k2 in cells for z in grid.get(k2, [])):
+            continue
+        grid.setdefault((int(cx // 80), int(cy // 80)), []).append(q)
+        zones.append(q)
+        kinds.append(kind)
+        area_sum += q.area
+    new = []
+    for i, (q, kd) in enumerate(zip(zones, kinds), 1):
+        ringl = [(x, y) for x, y in list(q.exterior.coords)[:-1]]
+        lt = make_lot(f"Calibration {'bus/truck ' if kd == 'large' else ''}zone {i:03d}", "calibrated", kd, 0, 0,
+                      "Calibration assumption: stands in for public off-street slots the IUM report counts but OpenStreetMap does not show",
+                      "assumed", ring=ringl, note="Not a surveyed lot; place and size are visual estimates", cap_source="layout")
+        lt["fit"] = {"action": "ok", "shift_m": 0.0, "lost": 0.0}
+        layout_lot(lt, q, args)
+        new.append(lt)
+    lots.extend(new)
+    return {"zones": len(new), "zone_moto_bays": sum(l["cap"]["moto"] for l in new), "zone_large_bays": sum(l["cap"].get("large", 0) for l in new)}
+
+
 # ----------------------------------------------------------------------------------------------
 # OpenStreetMap access (only used when not --no-osm)
 # ----------------------------------------------------------------------------------------------
@@ -676,6 +812,14 @@ def main():
                     help="road area (dashboard slider) to stay clear of; 1.0 = the widest setting (default)")
     ap.add_argument("--road-margin", type=float, default=0.5, help="clear distance kept from the road edge (m)")
     ap.add_argument("--max-move", type=float, default=150.0, help="furthest a lot may be moved to get off the road (m)")
+    ap.add_argument("--large-share", type=float, default=0.05,
+                    help="share of each car / mixed lot's car-size ground laid out as bus / truck bays (default 0.05; 0 = none)")
+    ap.add_argument("--calib-km2", type=float, default=0.40,
+                    help="ground area of the pool of calibration zones to generate (default 0.40 km2; the dashboard uses only what it needs)")
+    ap.add_argument("--calib-large-km2", type=float, default=0.18,
+                    help="ground area of the pool of bus / truck calibration zones (default 0.18 km2, about 2,600 bays)")
+    ap.add_argument("--calib-seed", type=int, default=11)
+    ap.add_argument("--no-calib", action="store_true", help="do not generate calibration zones")
     ap.add_argument("--keep-frac", type=float, default=0.6,
                     help="a lot keeps its place (cut at the road edge) if at least this share of it is off the road")
     args = ap.parse_args()
@@ -687,8 +831,9 @@ def main():
 
     if args.refit:                                       # no OSM, no georeferencing: lots are already in network metres
         old = json.load(open(args.out))
-        lots = old["lots"]
+        lots = [lt for lt in old["lots"] if lt.get("status") != "calibrated"]     # calibration zones are regenerated
         st = fit_and_layout(lots, net, args)
+        st.update({"calib_" + k: v for k, v in add_calibration(lots, net, args).items()})
         for i, lt in enumerate(lots, 1):
             lt["id"] = f"L{i:03d}"
         old["lots"] = lots
@@ -784,7 +929,8 @@ def main():
     fit_stats = {}
     if not args.no_fit:
         fit_stats = fit_and_layout(keep, net, args)
-    keep.sort(key=lambda lt: (-(lt["cap"]["car"] + lt["cap"]["moto"]), lt["name"]))
+        fit_stats.update({"calib_" + k: v for k, v in add_calibration(keep, net, args).items()})
+    keep.sort(key=lambda lt: (lt["status"] == "calibrated", -(lt["cap"]["car"] + lt["cap"]["moto"]), lt["name"]))
     for i, lt in enumerate(keep, 1):
         lt["id"] = f"L{i:03d}"
 
@@ -812,7 +958,7 @@ def main():
     if merged:
         print("manual entries:", dict(merged))
     summarise(keep, fit_stats, args)
-    nocap = [lt["name"] for lt in keep if lt["cap"]["moto"] + lt["cap"]["car"] == 0]
+    nocap = [lt["name"] for lt in keep if lt["cap"]["moto"] + lt["cap"]["car"] + lt["cap"].get("large", 0) == 0]
     if pending:
         print(f"  {len(pending)} manual rows need coordinates (lat, lon) before they can be placed: " +
               ", ".join(p["name"] for p in pending[:8]) + (" ..." if len(pending) > 8 else ""))
@@ -820,20 +966,21 @@ def main():
 
 def summarise(keep, fit_stats, args):
     if fit_stats:
-        print("fit to the road area:", {k: v for k, v in fit_stats.items() if k != "road_scale"},
+        print("fit to the road area:", {k: v for k, v in fit_stats.items() if k != "road_scale" and not k.startswith("calib_")},
               f"(streets drawn at x{fit_stats.get('road_scale')} of their file width at {args.road_area_km2} km2)")
     by = {}
     for lt in keep:
-        s = by.setdefault(lt["status"], [0, 0, 0, 0, 0])
+        s = by.setdefault(lt["status"], [0, 0, 0, 0, 0, 0])
         s[0] += 1
         s[1] += lt["cap"]["moto"]
         s[2] += lt["cap"]["car"]
         b = lt.get("bays") or {}
         s[3] += len(b.get("moto", [])) // 3
         s[4] += len(b.get("car", [])) // 3
-    for st, (n, m, c, bm, bc) in sorted(by.items()):
-        print(f"  {st:11s} {n:4d} lots   capacity: {m:7d} motorcycle, {c:6d} car   drawn bays: {bm:6d} motorcycle, {bc:6d} car")
-    nocap = [lt["name"] for lt in keep if lt["cap"]["moto"] + lt["cap"]["car"] == 0]
+        s[5] += len(b.get("large", [])) // 3
+    for st, (n, m, c, bm, bc, bl) in sorted(by.items()):
+        print(f"  {st:11s} {n:4d} lots   capacity: {m:7d} motorcycle, {c:6d} car   drawn bays: {bm:6d} motorcycle, {bc:6d} car, {bl:5d} bus/truck")
+    nocap = [lt["name"] for lt in keep if lt["cap"]["moto"] + lt["cap"]["car"] + lt["cap"].get("large", 0) == 0]
     if nocap:
         print(f"  {len(nocap)} lots have no capacity yet (add capacity or an outline): " + ", ".join(nocap[:8]) + (" ..." if len(nocap) > 8 else ""))
 
